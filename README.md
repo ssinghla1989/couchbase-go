@@ -58,6 +58,60 @@ Concurrency: worker pool bound by `BULK_MAX_WORKERS` (default 8). Per-request ti
 
 All handlers return JSON with consistent fields like `id`, `cas`, `content`, `deleted`. Errors use safe messages and include `request_id` in panic responses via middleware.
 
+### CAS-protected writes
+
+- ETag header mirrors Couchbase CAS on GET/PUT/DELETE responses: `ETag: "<cas>"`.
+- Conditional headers supported:
+  - `If-Match: "<cas>"` → replace or delete only if CAS matches exactly.
+  - `If-None-Match: *` → create-only insert; fails if document exists.
+- Body fallbacks (when headers cannot be set). Headers take precedence:
+  - PUT body:
+    ```json
+    {
+      "doc": {"name": "Alice"},
+      "ttl_seconds": 3600,
+      "if_match_cas": "12345",
+      "if_none_match": false
+    }
+    ```
+  - DELETE body:
+    ```json
+    {
+      "if_match_cas": "67890"
+    }
+    ```
+- Status codes:
+  - 201 Created: insert via create-only
+  - 200 OK: upsert/replace/delete success
+  - 404 Not Found: replace/delete target missing
+  - 409 Conflict: CAS mismatch (`cas_mismatch`) or insert-only conflict (`conflict_exists`)
+  - 428 Precondition Required: when `REQUIRE_CAS_ON_DELETE=true` and no CAS provided
+  - 400 Bad Request: invalid payload / malformed CAS / negative TTL
+
+Examples:
+- Replace with CAS:
+  ```bash
+  curl -X PUT \
+    -H 'If-Match: "12345"' \
+    -H 'Content-Type: application/json' \
+    -d '{"doc": {"name": "Bob"}}' \
+    http://localhost:8080/buckets/users/docs/user::1 -i
+  ```
+- Create-only:
+  ```bash
+  curl -X PUT \
+    -H 'If-None-Match: *' \
+    -H 'Content-Type: application/json' \
+    -d '{"doc": {"name": "New"}}' \
+    http://localhost:8080/buckets/users/docs/user::new -i
+  ```
+- Delete with CAS:
+  ```bash
+  curl -X DELETE \
+    -H 'If-Match: "67890"' \
+    http://localhost:8080/buckets/users/docs/user::1 -i
+  ```
+
 ### Configuration
 
 Environment variables (see `.env.example`):
@@ -68,6 +122,8 @@ Environment variables (see `.env.example`):
 - Single-cluster Couchbase:
   - CB_CONN_STR, CB_USERNAME, CB_PASSWORD, CB_BUCKET
   - CB_KV_DIAL_TIMEOUT_MS, CB_KV_OP_TIMEOUT_MS
+- CAS/Concurrency:
+  - REQUIRE_CAS_ON_DELETE: true|false (default false)
 
 Load order:
 1. `.env` (base, optional)

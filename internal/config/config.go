@@ -33,6 +33,9 @@ type Config struct {
 	BulkGetMaxIDs      int           `env:"BULK_GET_MAX_IDS" envDefault:"1000" validate:"min=1,max=5000"`
 	BulkUpsertMaxItems int           `env:"BULK_UPSERT_MAX_ITEMS" envDefault:"500" validate:"min=1,max=5000"`
 	BulkHandlerTimeout time.Duration `env:"BULK_HANDLER_TIMEOUT" envDefault:"5s"`
+
+	// Concurrency control
+	RequireCASOnDelete bool `env:"REQUIRE_CAS_ON_DELETE" envDefault:"false"`
 }
 
 // CouchbaseConfig defines connection parameters for a single Couchbase cluster.
