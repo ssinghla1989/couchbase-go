@@ -2,10 +2,12 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -44,13 +46,13 @@ func mapErrorToStatus(err error) int {
 	if errors.Is(err, gocb.ErrDocumentNotFound) {
 		return http.StatusNotFound
 	}
-	// Heuristic: treat plain-text not founds as 404
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "not found") {
-		return http.StatusNotFound
+	if errors.Is(err, gocb.ErrDocumentExists) {
+		return http.StatusConflict
 	}
-	// Treat timeouts or obvious connectivity issues as 503
-	if errors.Is(err, gocb.ErrTimeout) || strings.Contains(msg, "timeout") || strings.Contains(msg, "network") || strings.Contains(msg, "unavailable") {
+	if errors.Is(err, gocb.ErrCasMismatch) {
+		return http.StatusConflict
+	}
+	if errors.Is(err, gocb.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return http.StatusServiceUnavailable
 	}
 	return http.StatusInternalServerError
@@ -58,14 +60,221 @@ func mapErrorToStatus(err error) int {
 
 func collectionFor(cb *couchbase.Client, bucketName, scopeName, collectionName string) (*gocb.Collection, error) {
 	bucket := cb.Bucket(bucketName)
-	if bucket == nil {
-		return nil, fmt.Errorf("bucket not found")
-	}
 	_ = bucket.WaitUntilReady(2*time.Second, nil)
 	if scopeName == "" || collectionName == "" {
 		return bucket.DefaultCollection(), nil
 	}
 	return bucket.Scope(scopeName).Collection(collectionName), nil
+}
+
+// resolveCollection enforces scope/collection pairing and waits for readiness (2s) using the request context.
+func resolveCollection(cb *couchbase.Client, bucketName, scopeName, collectionName string, ctx context.Context) (*gocb.Collection, int, error) {
+	if (scopeName == "" && collectionName != "") || (scopeName != "" && collectionName == "") {
+		return nil, http.StatusBadRequest, fmt.Errorf("both scope and collection must be supplied together")
+	}
+	bucket := cb.Bucket(bucketName)
+	readyCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := bucket.WaitUntilReady(2*time.Second, &gocb.WaitUntilReadyOptions{Context: readyCtx}); err != nil {
+		return nil, http.StatusServiceUnavailable, fmt.Errorf("bucket not ready")
+	}
+	if scopeName == "" && collectionName == "" {
+		return bucket.DefaultCollection(), http.StatusOK, nil
+	}
+	return bucket.Scope(scopeName).Collection(collectionName), http.StatusOK, nil
+}
+
+// writeJSON ensures consistent content-type and body schema.
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	if w == nil {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	response.JSON(w, status, payload)
+}
+
+// okWithETag writes an {id, cas} payload with ETag header set to the quoted CAS.
+func okWithETag(w http.ResponseWriter, status int, id string, cas gocb.Cas) {
+	setETag(w, cas)
+	writeJSON(w, status, map[string]any{"id": id, "cas": fmt.Sprintf("%d", uint64(cas))})
+}
+
+// upsertInput holds validated inputs for the upsert flow.
+type upsertInput struct {
+	Doc        json.RawMessage
+	Expiry     *time.Duration
+	CreateOnly bool
+	MatchCAS   *gocb.Cas
+}
+
+// parseUpsertBody strictly validates body and headers, returning an HTTP status for validation errors.
+func parseUpsertBody(r *http.Request, logger *zap.Logger) (upsertInput, int, error) {
+	var in upsertInput
+
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		low := strings.ToLower(err.Error())
+		if strings.Contains(low, "request body too large") {
+			return in, http.StatusRequestEntityTooLarge, fmt.Errorf("request body too large")
+		}
+		return in, http.StatusBadRequest, fmt.Errorf("invalid request body")
+	}
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+
+	var body map[string]any
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return in, http.StatusBadRequest, fmt.Errorf("invalid JSON body")
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return in, http.StatusBadRequest, fmt.Errorf("invalid JSON body")
+	}
+
+	// TTL parsing (integer only, >= 0)
+	var ttlProvided bool
+	var ttlSeconds int64
+	if v, ok := body["ttl_seconds"]; ok {
+		ttlProvided = true
+		switch t := v.(type) {
+		case float64:
+			if t != math.Trunc(t) {
+				return in, http.StatusBadRequest, fmt.Errorf("invalid ttl_seconds")
+			}
+			ttlSeconds = int64(t)
+		case string:
+			if strings.TrimSpace(t) == "" {
+				return in, http.StatusBadRequest, fmt.Errorf("invalid ttl_seconds")
+			}
+			iv, perr := strconv.ParseInt(t, 10, 64)
+			if perr != nil {
+				return in, http.StatusBadRequest, fmt.Errorf("invalid ttl_seconds")
+			}
+			ttlSeconds = iv
+		default:
+			return in, http.StatusBadRequest, fmt.Errorf("invalid ttl_seconds")
+		}
+		if ttlSeconds < 0 {
+			return in, http.StatusBadRequest, fmt.Errorf("ttl_seconds must be >= 0")
+		}
+		d := time.Duration(ttlSeconds) * time.Second
+		in.Expiry = &d
+	}
+
+	// If-None-Match: only * allowed (quoted or not). Body fallback: if_none_match (bool)
+	var headerINMSet bool
+	var headerINMStar bool
+	if raw := strings.TrimSpace(r.Header.Get("If-None-Match")); raw != "" {
+		headerINMSet = true
+		if raw == "*" || (len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' && raw[1:len(raw)-1] == "*") {
+			headerINMStar = true
+		} else {
+			return in, http.StatusBadRequest, fmt.Errorf("invalid If-None-Match; only * is allowed")
+		}
+	}
+	var bodyINM *bool
+	if v, ok := body["if_none_match"]; ok {
+		b, ok := v.(bool)
+		if !ok {
+			return in, http.StatusBadRequest, fmt.Errorf("invalid if_none_match")
+		}
+		bodyINM = &b
+	}
+	if headerINMSet {
+		if bodyINM != nil && *bodyINM != headerINMStar {
+			return in, http.StatusBadRequest, fmt.Errorf("invalid If-None-Match; only * is allowed")
+		}
+		in.CreateOnly = headerINMStar
+	} else if bodyINM != nil {
+		in.CreateOnly = *bodyINM
+	}
+
+	// If-Match header: quoted decimal only, no weak validators. Body if_match_cas must be string.
+	var headerCASSet bool
+	var headerCAS string
+	if rawIfMatch := strings.TrimSpace(r.Header.Get("If-Match")); rawIfMatch != "" {
+		if strings.HasPrefix(rawIfMatch, "W/") {
+			return in, http.StatusBadRequest, fmt.Errorf("invalid If-Match header")
+		}
+		if !(len(rawIfMatch) >= 2 && rawIfMatch[0] == '"' && rawIfMatch[len(rawIfMatch)-1] == '"') {
+			return in, http.StatusBadRequest, fmt.Errorf("invalid If-Match header")
+		}
+		headerCAS = rawIfMatch[1 : len(rawIfMatch)-1]
+		headerCASSet = true
+	}
+	var bodyCASPtr *string
+	if v, ok := body["if_match_cas"]; ok {
+		s, ok := v.(string)
+		if !ok || strings.TrimSpace(s) == "" {
+			return in, http.StatusBadRequest, fmt.Errorf("if_match_cas must be a quoted string")
+		}
+		s = strings.TrimSpace(s)
+		bodyCASPtr = &s
+	}
+	switch {
+	case headerCASSet && bodyCASPtr != nil && headerCAS != *bodyCASPtr:
+		return in, http.StatusBadRequest, fmt.Errorf("conflicting CAS in header and body")
+	case headerCASSet:
+		cas, perr := parseCASString(headerCAS)
+		if perr != nil {
+			return in, http.StatusBadRequest, fmt.Errorf("invalid If-Match header")
+		}
+		in.MatchCAS = &cas
+	case !headerCASSet && bodyCASPtr != nil:
+		cas, perr := parseCASString(*bodyCASPtr)
+		if perr != nil {
+			return in, http.StatusBadRequest, fmt.Errorf("invalid if_match_cas")
+		}
+		in.MatchCAS = &cas
+	}
+
+	// Document extraction rule
+	controlPresent := ttlProvided || headerINMSet || bodyINM != nil || headerCASSet || bodyCASPtr != nil
+	if v, ok := body["doc"]; ok {
+		b, _ := json.Marshal(v)
+		in.Doc = json.RawMessage(b)
+	} else if controlPresent {
+		return in, http.StatusBadRequest, fmt.Errorf("when using ttl/conditions, provide a 'doc' field")
+	} else {
+		in.Doc = json.RawMessage(raw)
+	}
+
+	return in, http.StatusOK, nil
+}
+
+// Operation helpers
+func doCreateOnly(coll *gocb.Collection, id string, body json.RawMessage, expiry *time.Duration, ctx context.Context) (gocb.Cas, error) {
+	var exp time.Duration
+	if expiry != nil {
+		exp = *expiry
+	}
+	res, err := coll.Insert(id, body, &gocb.InsertOptions{Context: ctx, Expiry: exp})
+	if err != nil {
+		return gocb.Cas(0), err
+	}
+	return res.Cas(), nil
+}
+
+func doReplaceCAS(coll *gocb.Collection, id string, body json.RawMessage, cas gocb.Cas, expiry *time.Duration, ctx context.Context) (gocb.Cas, error) {
+	var exp time.Duration
+	if expiry != nil {
+		exp = *expiry
+	}
+	res, err := coll.Replace(id, body, &gocb.ReplaceOptions{Context: ctx, Cas: cas, Expiry: exp})
+	if err != nil {
+		return gocb.Cas(0), err
+	}
+	return res.Cas(), nil
+}
+
+func doUnconditionalUpsert(coll *gocb.Collection, id string, body json.RawMessage, expiry *time.Duration, ctx context.Context) (gocb.Cas, error) {
+	var exp time.Duration
+	if expiry != nil {
+		exp = *expiry
+	}
+	res, err := coll.Upsert(id, body, &gocb.UpsertOptions{Context: ctx, Expiry: exp})
+	if err != nil {
+		return gocb.Cas(0), err
+	}
+	return res.Cas(), nil
 }
 
 // GetDocument handles fetching a document by ID.
@@ -102,20 +311,41 @@ func GetDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			return
 		}
 
-		coll, err := collectionFor(cb, bucket, scope, collection)
+		coll, code, err := resolveCollection(cb, bucket, scope, collection, r.Context())
 		if err != nil {
-			response.Error(w, http.StatusServiceUnavailable, err)
+			if code >= 500 {
+				if logger != nil {
+					logger.Error("collection resolution failed", zap.Error(err))
+				}
+			} else {
+				if logger != nil {
+					logger.Warn("collection resolution failed", zap.Error(err))
+				}
+			}
+			response.JSON(w, code, map[string]any{"code": "unavailable", "message": err.Error()})
 			return
 		}
 		res, err := coll.Get(id, &gocb.GetOptions{Context: r.Context()})
 		if err != nil {
 			status := mapErrorToStatus(err)
-			response.Error(w, status, err)
+			if status >= 500 {
+				if logger != nil {
+					logger.Error("get failed", zap.Error(err))
+				}
+			} else {
+				if logger != nil {
+					logger.Warn("get failed", zap.Error(err))
+				}
+			}
+			response.JSON(w, status, map[string]any{"code": http.StatusText(status), "message": err.Error()})
 			return
 		}
 		var content map[string]any
 		if err := res.Content(&content); err != nil {
-			response.Error(w, http.StatusInternalServerError, err)
+			if logger != nil {
+				logger.Error("decode content failed", zap.Error(err))
+			}
+			response.JSON(w, http.StatusInternalServerError, map[string]any{"code": "decode_error", "message": err.Error()})
 			return
 		}
 		setETag(w, res.Cas())
@@ -162,7 +392,16 @@ func CreateDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			cas, err := overrideInsert(bucket, scope, collection, id, body)
 			if err != nil {
 				status := mapErrorToStatus(err)
-				response.Error(w, status, err)
+				if status >= 500 {
+					if logger != nil {
+						logger.Error("override insert failed", zap.Error(err))
+					}
+				} else {
+					if logger != nil {
+						logger.Warn("override insert failed", zap.Error(err))
+					}
+				}
+				response.JSON(w, status, map[string]any{"code": http.StatusText(status), "message": err.Error()})
 				return
 			}
 			setETag(w, gocb.Cas(cas))
@@ -170,15 +409,33 @@ func CreateDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			return
 		}
 
-		coll, err := collectionFor(cb, bucket, scope, collection)
+		coll, code, err := resolveCollection(cb, bucket, scope, collection, r.Context())
 		if err != nil {
-			response.Error(w, http.StatusServiceUnavailable, err)
+			if code >= 500 {
+				if logger != nil {
+					logger.Error("collection resolution failed", zap.Error(err))
+				}
+			} else {
+				if logger != nil {
+					logger.Warn("collection resolution failed", zap.Error(err))
+				}
+			}
+			response.JSON(w, code, map[string]any{"code": "unavailable", "message": err.Error()})
 			return
 		}
 		res, err := coll.Insert(id, body, &gocb.InsertOptions{Context: r.Context()})
 		if err != nil {
 			status := mapErrorToStatus(err)
-			response.Error(w, status, err)
+			if status >= 500 {
+				if logger != nil {
+					logger.Error("insert failed", zap.Error(err))
+				}
+			} else {
+				if logger != nil {
+					logger.Warn("insert failed", zap.Error(err))
+				}
+			}
+			response.JSON(w, status, map[string]any{"code": http.StatusText(status), "message": err.Error()})
 			return
 		}
 		setETag(w, res.Cas())
@@ -213,155 +470,59 @@ func UpsertDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 		id := chi.URLParam(r, "id")
 		scope, collection := getScopeAndCollection(r)
 
-		rawBody, err := io.ReadAll(r.Body)
+		// limit request body to 10MB
+		r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+
+		in, code, err := parseUpsertBody(r, logger)
 		if err != nil {
-			response.JSON(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": "invalid request body"})
-			return
-		}
-		r.Body = io.NopCloser(bytes.NewReader(rawBody))
-
-		var bodyMap map[string]any
-		_ = json.Unmarshal(rawBody, &bodyMap)
-
-		// ttl_seconds (>=0)
-		var ttlSeconds *int
-		if v, ok := bodyMap["ttl_seconds"]; ok {
-			switch t := v.(type) {
-			case float64:
-				iv := int(t)
-				ttlSeconds = &iv
-			case string:
-				if t != "" {
-					if iv, perr := strconv.Atoi(t); perr == nil {
-						ttlSeconds = &iv
-					} else {
-						response.JSON(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": "invalid ttl_seconds"})
-						return
-					}
+			if code >= 500 {
+				if logger != nil {
+					logger.Error("upsert validation failed", zap.Error(err))
+				}
+			} else {
+				if logger != nil {
+					logger.Warn("upsert validation failed", zap.Error(err))
 				}
 			}
-			if ttlSeconds != nil && *ttlSeconds < 0 {
-				response.JSON(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": "ttl_seconds must be >= 0"})
-				return
-			}
-		}
-
-		// doc payload
-		var docRaw json.RawMessage
-		if v, ok := bodyMap["doc"]; ok {
-			b, _ := json.Marshal(v)
-			docRaw = json.RawMessage(b)
-		} else {
-			docRaw = json.RawMessage(rawBody)
-		}
-
-		// conditions precedence
-		var bodyIfNoneMatch *bool
-		if v, ok := bodyMap["if_none_match"]; ok {
-			switch t := v.(type) {
-			case bool:
-				bodyIfNoneMatch = &t
-			case string:
-				if t == "true" || t == "false" {
-					bv := t == "true"
-					bodyIfNoneMatch = &bv
-				}
-			}
-		}
-		var bodyIfMatchCASStr *string
-		if v, ok := bodyMap["if_match_cas"]; ok {
-			switch t := v.(type) {
-			case float64:
-				s := strconv.FormatUint(uint64(t), 10)
-				bodyIfMatchCASStr = &s
-			case string:
-				if t != "" {
-					bodyIfMatchCASStr = &t
-				}
-			}
-		}
-
-		createOnly := isCreateOnly(r, bodyIfNoneMatch)
-		matchCASPtr, casErr := getMatchCAS(r, bodyIfMatchCASStr)
-		if casErr != nil {
-			response.JSON(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": casErr.Error()})
+			response.JSON(w, code, map[string]any{"code": "invalid", "message": err.Error()})
 			return
 		}
 
-		var expiryOpt time.Duration
-		if ttlSeconds != nil {
-			expiryOpt = time.Duration(*ttlSeconds) * time.Second
-		}
-
-		if createOnly {
-			if overrideInsert != nil {
-				cas, err := overrideInsert(bucket, scope, collection, id, docRaw)
-				if err != nil {
-					response.JSON(w, http.StatusConflict, map[string]any{"code": "conflict_exists", "message": err.Error()})
-					return
-				}
-				setETag(w, gocb.Cas(cas))
-				response.JSON(w, http.StatusCreated, map[string]any{"id": id, "cas": fmt.Sprintf("%d", cas)})
-				return
-			}
-			coll, err := collectionFor(cb, bucket, scope, collection)
-			if err != nil {
-				response.Error(w, http.StatusServiceUnavailable, err)
-				return
-			}
-			res, err := coll.Insert(id, docRaw, &gocb.InsertOptions{Context: r.Context(), Expiry: expiryOpt})
+		// Overrides first
+		if in.CreateOnly && overrideInsert != nil {
+			cas, err := overrideInsert(bucket, scope, collection, id, in.Doc)
 			if err != nil {
 				if errors.Is(err, gocb.ErrDocumentExists) {
 					if logger != nil {
-						logger.Warn("create-only conflict", zap.String("id", id), zap.String("bucket", bucket), zap.String("scope", scope), zap.String("collection", collection), zap.Bool("exists", true), zap.String("op", "insert"))
+						logger.Warn("create-only conflict", zap.String("id", id), zap.String("bucket", bucket), zap.String("scope", scope), zap.String("collection", collection), zap.String("op", "insert"))
 					}
 					response.JSON(w, http.StatusConflict, map[string]any{"code": "conflict_exists", "message": "document already exists"})
 					return
 				}
 				status := mapErrorToStatus(err)
-				response.Error(w, status, err)
+				if status >= 500 {
+					if logger != nil {
+						logger.Error("override insert failed", zap.Error(err))
+					}
+				} else {
+					if logger != nil {
+						logger.Warn("override insert failed", zap.Error(err))
+					}
+				}
+				response.JSON(w, status, map[string]any{"code": http.StatusText(status), "message": err.Error()})
 				return
 			}
-			setETag(w, res.Cas())
-			response.JSON(w, http.StatusCreated, map[string]any{"id": id, "cas": fmt.Sprintf("%d", uint64(res.Cas()))})
+			setETag(w, gocb.Cas(cas))
+			response.JSON(w, http.StatusCreated, map[string]any{"id": id, "cas": fmt.Sprintf("%d", cas)})
 			return
 		}
 
-		if matchCASPtr != nil {
-			matchCAS := *matchCASPtr
-			if overrideReplaceCAS != nil {
-				newCas, err := overrideReplaceCAS(bucket, scope, collection, id, uint64(matchCAS), docRaw)
-				if err != nil {
-					msg := strings.ToLower(err.Error())
-					if strings.Contains(msg, "mismatch") {
-						if logger != nil {
-							logger.Warn("CAS mismatch on replace", zap.String("id", id), zap.String("bucket", bucket), zap.String("scope", scope), zap.String("collection", collection), zap.Uint64("expected_cas", uint64(matchCAS)), zap.String("op", "replace"))
-						}
-						response.JSON(w, http.StatusConflict, map[string]any{"code": "cas_mismatch", "message": "cas mismatch"})
-						return
-					}
-					if strings.Contains(msg, "not found") {
-						response.JSON(w, http.StatusNotFound, map[string]any{"code": "not_found", "message": "document not found"})
-						return
-					}
-					status := mapErrorToStatus(err)
-					response.Error(w, status, err)
-					return
-				}
-				setETag(w, gocb.Cas(newCas))
-				response.JSON(w, http.StatusOK, map[string]any{"id": id, "cas": fmt.Sprintf("%d", newCas)})
-				return
-			}
-			coll, err := collectionFor(cb, bucket, scope, collection)
-			if err != nil {
-				response.Error(w, http.StatusServiceUnavailable, err)
-				return
-			}
-			res, err := coll.Replace(id, docRaw, &gocb.ReplaceOptions{Context: r.Context(), Cas: matchCAS, Expiry: expiryOpt})
+		if in.MatchCAS != nil && overrideReplaceCAS != nil {
+			newCas, err := overrideReplaceCAS(bucket, scope, collection, id, uint64(*in.MatchCAS), in.Doc)
 			if err != nil {
 				if errors.Is(err, gocb.ErrCasMismatch) {
 					if logger != nil {
-						logger.Warn("CAS mismatch on replace", zap.String("id", id), zap.String("bucket", bucket), zap.String("scope", scope), zap.String("collection", collection), zap.Uint64("expected_cas", uint64(matchCAS)), zap.String("op", "replace"))
+						logger.Warn("CAS mismatch on replace", zap.String("id", id), zap.String("bucket", bucket), zap.String("scope", scope), zap.String("collection", collection), zap.Uint64("expected_cas", uint64(*in.MatchCAS)), zap.String("op", "replace"))
 					}
 					response.JSON(w, http.StatusConflict, map[string]any{"code": "cas_mismatch", "message": "cas mismatch"})
 					return
@@ -371,39 +532,137 @@ func UpsertDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 					return
 				}
 				status := mapErrorToStatus(err)
-				response.Error(w, status, err)
+				if status >= 500 {
+					if logger != nil {
+						logger.Error("override replace failed", zap.Error(err))
+					}
+				} else {
+					if logger != nil {
+						logger.Warn("override replace failed", zap.Error(err))
+					}
+				}
+				response.JSON(w, status, map[string]any{"code": http.StatusText(status), "message": err.Error()})
 				return
 			}
-			setETag(w, res.Cas())
-			response.JSON(w, http.StatusOK, map[string]any{"id": id, "cas": fmt.Sprintf("%d", uint64(res.Cas()))})
+			setETag(w, gocb.Cas(newCas))
+			response.JSON(w, http.StatusOK, map[string]any{"id": id, "cas": fmt.Sprintf("%d", newCas)})
 			return
 		}
 
-		// Unconditional upsert
-		if overrideUpsert != nil {
-			cas, err := overrideUpsert(bucket, scope, collection, id, docRaw)
+		if in.MatchCAS == nil && !in.CreateOnly && overrideUpsert != nil {
+			cas, err := overrideUpsert(bucket, scope, collection, id, in.Doc)
 			if err != nil {
 				status := mapErrorToStatus(err)
-				response.Error(w, status, err)
+				if status >= 500 {
+					if logger != nil {
+						logger.Error("override upsert failed", zap.Error(err))
+					}
+				} else {
+					if logger != nil {
+						logger.Warn("override upsert failed", zap.Error(err))
+					}
+				}
+				response.JSON(w, status, map[string]any{"code": http.StatusText(status), "message": err.Error()})
 				return
 			}
 			setETag(w, gocb.Cas(cas))
 			response.JSON(w, http.StatusOK, map[string]any{"id": id, "cas": fmt.Sprintf("%d", cas)})
 			return
 		}
-		coll, err := collectionFor(cb, bucket, scope, collection)
+
+		// Resolve collection
+		coll, code, err := resolveCollection(cb, bucket, scope, collection, r.Context())
 		if err != nil {
-			response.Error(w, http.StatusServiceUnavailable, err)
+			if code >= 500 {
+				if logger != nil {
+					logger.Error("collection resolution failed", zap.Error(err))
+				}
+			} else {
+				if logger != nil {
+					logger.Warn("collection resolution failed", zap.Error(err))
+				}
+			}
+			response.JSON(w, code, map[string]any{"code": "unavailable", "message": err.Error()})
 			return
 		}
-		res, err := coll.Upsert(id, docRaw, &gocb.UpsertOptions{Context: r.Context(), Expiry: expiryOpt})
+
+		if in.CreateOnly {
+			cas, err := doCreateOnly(coll, id, in.Doc, in.Expiry, r.Context())
+			if err != nil {
+				if errors.Is(err, gocb.ErrDocumentExists) {
+					if logger != nil {
+						logger.Warn("create-only conflict", zap.String("id", id), zap.String("bucket", bucket), zap.String("scope", scope), zap.String("collection", collection), zap.String("op", "insert"))
+					}
+					response.JSON(w, http.StatusConflict, map[string]any{"code": "conflict_exists", "message": "document already exists"})
+					return
+				}
+				status := mapErrorToStatus(err)
+				if status >= 500 {
+					if logger != nil {
+						logger.Error("insert failed", zap.Error(err))
+					}
+				} else {
+					if logger != nil {
+						logger.Warn("insert failed", zap.Error(err))
+					}
+				}
+				response.JSON(w, status, map[string]any{"code": http.StatusText(status), "message": err.Error()})
+				return
+			}
+			setETag(w, cas)
+			response.JSON(w, http.StatusCreated, map[string]any{"id": id, "cas": fmt.Sprintf("%d", uint64(cas))})
+			return
+		}
+
+		if in.MatchCAS != nil {
+			cas, err := doReplaceCAS(coll, id, in.Doc, *in.MatchCAS, in.Expiry, r.Context())
+			if err != nil {
+				if errors.Is(err, gocb.ErrCasMismatch) {
+					if logger != nil {
+						logger.Warn("CAS mismatch on replace", zap.String("id", id), zap.String("bucket", bucket), zap.String("scope", scope), zap.String("collection", collection), zap.Uint64("expected_cas", uint64(*in.MatchCAS)), zap.String("op", "replace"))
+					}
+					response.JSON(w, http.StatusConflict, map[string]any{"code": "cas_mismatch", "message": "cas mismatch"})
+					return
+				}
+				if errors.Is(err, gocb.ErrDocumentNotFound) {
+					response.JSON(w, http.StatusNotFound, map[string]any{"code": "not_found", "message": "document not found"})
+					return
+				}
+				status := mapErrorToStatus(err)
+				if status >= 500 {
+					if logger != nil {
+						logger.Error("replace failed", zap.Error(err))
+					}
+				} else {
+					if logger != nil {
+						logger.Warn("replace failed", zap.Error(err))
+					}
+				}
+				response.JSON(w, status, map[string]any{"code": http.StatusText(status), "message": err.Error()})
+				return
+			}
+			setETag(w, cas)
+			response.JSON(w, http.StatusOK, map[string]any{"id": id, "cas": fmt.Sprintf("%d", uint64(cas))})
+			return
+		}
+
+		cas, err := doUnconditionalUpsert(coll, id, in.Doc, in.Expiry, r.Context())
 		if err != nil {
 			status := mapErrorToStatus(err)
-			response.Error(w, status, err)
+			if status >= 500 {
+				if logger != nil {
+					logger.Error("upsert failed", zap.Error(err))
+				}
+			} else {
+				if logger != nil {
+					logger.Warn("upsert failed", zap.Error(err))
+				}
+			}
+			response.JSON(w, status, map[string]any{"code": http.StatusText(status), "message": err.Error()})
 			return
 		}
-		setETag(w, res.Cas())
-		response.JSON(w, http.StatusOK, map[string]any{"id": id, "cas": fmt.Sprintf("%d", uint64(res.Cas()))})
+		setETag(w, cas)
+		response.JSON(w, http.StatusOK, map[string]any{"id": id, "cas": fmt.Sprintf("%d", uint64(cas))})
 	}
 }
 
@@ -431,31 +690,75 @@ func DeleteDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 		id := chi.URLParam(r, "id")
 		scope, collection := getScopeAndCollection(r)
 
+		// request size limit
+		r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+
 		var bodyMap map[string]any
 		if r.Body != nil {
-			raw, _ := io.ReadAll(r.Body)
-			if len(raw) > 0 {
-				_ = json.Unmarshal(raw, &bodyMap)
+			raw, err := io.ReadAll(r.Body)
+			if err != nil {
+				low := strings.ToLower(err.Error())
+				if strings.Contains(low, "request body too large") {
+					response.JSON(w, http.StatusRequestEntityTooLarge, map[string]any{"code": "too_large", "message": "request body too large"})
+					return
+				}
+				response.JSON(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": "invalid request body"})
+				return
 			}
-		}
-
-		var bodyIfMatchCASStr *string
-		if v, ok := bodyMap["if_match_cas"]; ok {
-			switch t := v.(type) {
-			case float64:
-				s := strconv.FormatUint(uint64(t), 10)
-				bodyIfMatchCASStr = &s
-			case string:
-				if t != "" {
-					bodyIfMatchCASStr = &t
+			if len(bytes.TrimSpace(raw)) > 0 {
+				if err := json.Unmarshal(raw, &bodyMap); err != nil {
+					response.JSON(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": "invalid JSON body"})
+					return
 				}
 			}
 		}
 
-		matchCASPtr, casErr := getMatchCAS(r, bodyIfMatchCASStr)
-		if casErr != nil {
-			response.JSON(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": casErr.Error()})
+		// Strict CAS resolution
+		var headerCASSet bool
+		var headerCAS string
+		if rawIfMatch := strings.TrimSpace(r.Header.Get("If-Match")); rawIfMatch != "" {
+			if strings.HasPrefix(rawIfMatch, "W/") {
+				response.JSON(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": "invalid If-Match header"})
+				return
+			}
+			if !(len(rawIfMatch) >= 2 && rawIfMatch[0] == '"' && rawIfMatch[len(rawIfMatch)-1] == '"') {
+				response.JSON(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": "invalid If-Match header"})
+				return
+			}
+			headerCAS = rawIfMatch[1 : len(rawIfMatch)-1]
+			headerCASSet = true
+		}
+
+		var bodyCASPtr *string
+		if v, ok := bodyMap["if_match_cas"]; ok {
+			s, ok := v.(string)
+			if !ok || strings.TrimSpace(s) == "" {
+				response.JSON(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": "if_match_cas must be a quoted string"})
+				return
+			}
+			s = strings.TrimSpace(s)
+			bodyCASPtr = &s
+		}
+
+		var matchCASPtr *gocb.Cas
+		switch {
+		case headerCASSet && bodyCASPtr != nil && headerCAS != *bodyCASPtr:
+			response.JSON(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": "conflicting CAS in header and body"})
 			return
+		case headerCASSet:
+			cas, err := parseCASString(headerCAS)
+			if err != nil {
+				response.JSON(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": "invalid If-Match header"})
+				return
+			}
+			matchCASPtr = &cas
+		case !headerCASSet && bodyCASPtr != nil:
+			cas, err := parseCASString(*bodyCASPtr)
+			if err != nil {
+				response.JSON(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": "invalid if_match_cas"})
+				return
+			}
+			matchCASPtr = &cas
 		}
 
 		requireCAS := false
@@ -474,29 +777,46 @@ func DeleteDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			if overrideDeleteCAS != nil {
 				oldCas, err := overrideDeleteCAS(bucket, scope, collection, id, uint64(matchCAS))
 				if err != nil {
-					msg := strings.ToLower(err.Error())
-					if strings.Contains(msg, "mismatch") {
+					if errors.Is(err, gocb.ErrCasMismatch) {
 						if logger != nil {
 							logger.Warn("CAS mismatch on delete", zap.String("id", id), zap.String("bucket", bucket), zap.String("scope", scope), zap.String("collection", collection), zap.Uint64("expected_cas", uint64(matchCAS)), zap.String("op", "delete"))
 						}
 						response.JSON(w, http.StatusConflict, map[string]any{"code": "cas_mismatch", "message": "cas mismatch"})
 						return
 					}
-					if strings.Contains(msg, "not found") {
+					if errors.Is(err, gocb.ErrDocumentNotFound) {
 						response.JSON(w, http.StatusNotFound, map[string]any{"code": "not_found", "message": "document not found"})
 						return
 					}
 					status := mapErrorToStatus(err)
-					response.Error(w, status, err)
+					if status >= 500 {
+						if logger != nil {
+							logger.Error("override delete failed", zap.Error(err))
+						}
+					} else {
+						if logger != nil {
+							logger.Warn("override delete failed", zap.Error(err))
+						}
+					}
+					response.JSON(w, status, map[string]any{"code": http.StatusText(status), "message": err.Error()})
 					return
 				}
 				setETag(w, gocb.Cas(oldCas))
 				response.JSON(w, http.StatusOK, map[string]any{"id": id, "deleted": true, "cas": fmt.Sprintf("%d", oldCas)})
 				return
 			}
-			coll, err := collectionFor(cb, bucket, scope, collection)
+			coll, code, err := resolveCollection(cb, bucket, scope, collection, r.Context())
 			if err != nil {
-				response.Error(w, http.StatusServiceUnavailable, err)
+				if code >= 500 {
+					if logger != nil {
+						logger.Error("collection resolution failed", zap.Error(err))
+					}
+				} else {
+					if logger != nil {
+						logger.Warn("collection resolution failed", zap.Error(err))
+					}
+				}
+				response.JSON(w, code, map[string]any{"code": "unavailable", "message": err.Error()})
 				return
 			}
 			res, err := coll.Remove(id, &gocb.RemoveOptions{Context: r.Context(), Cas: matchCAS})
@@ -513,7 +833,16 @@ func DeleteDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 					return
 				}
 				status := mapErrorToStatus(err)
-				response.Error(w, status, err)
+				if status >= 500 {
+					if logger != nil {
+						logger.Error("delete failed", zap.Error(err))
+					}
+				} else {
+					if logger != nil {
+						logger.Warn("delete failed", zap.Error(err))
+					}
+				}
+				response.JSON(w, status, map[string]any{"code": http.StatusText(status), "message": err.Error()})
 				return
 			}
 			setETag(w, res.Cas())
@@ -526,7 +855,16 @@ func DeleteDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			cas, err := overrideDelete(bucket, scope, collection, id)
 			if err != nil {
 				status := mapErrorToStatus(err)
-				response.Error(w, status, err)
+				if status >= 500 {
+					if logger != nil {
+						logger.Error("override delete failed", zap.Error(err))
+					}
+				} else {
+					if logger != nil {
+						logger.Warn("override delete failed", zap.Error(err))
+					}
+				}
+				response.JSON(w, status, map[string]any{"code": http.StatusText(status), "message": err.Error()})
 				return
 			}
 			setETag(w, gocb.Cas(cas))
@@ -534,15 +872,33 @@ func DeleteDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			return
 		}
 
-		coll, err := collectionFor(cb, bucket, scope, collection)
+		coll, code, err := resolveCollection(cb, bucket, scope, collection, r.Context())
 		if err != nil {
-			response.Error(w, http.StatusServiceUnavailable, err)
+			if code >= 500 {
+				if logger != nil {
+					logger.Error("collection resolution failed", zap.Error(err))
+				}
+			} else {
+				if logger != nil {
+					logger.Warn("collection resolution failed", zap.Error(err))
+				}
+			}
+			response.JSON(w, code, map[string]any{"code": "unavailable", "message": err.Error()})
 			return
 		}
 		res, err := coll.Remove(id, &gocb.RemoveOptions{Context: r.Context()})
 		if err != nil {
 			status := mapErrorToStatus(err)
-			response.Error(w, status, err)
+			if status >= 500 {
+				if logger != nil {
+					logger.Error("delete failed", zap.Error(err))
+				}
+			} else {
+				if logger != nil {
+					logger.Warn("delete failed", zap.Error(err))
+				}
+			}
+			response.JSON(w, status, map[string]any{"code": http.StatusText(status), "message": err.Error()})
 			return
 		}
 		setETag(w, res.Cas())
