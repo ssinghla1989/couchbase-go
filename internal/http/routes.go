@@ -26,6 +26,10 @@ func RegisterRoutes(r *chi.Mux, cbClient *couchbase.Client, logger *zap.Logger) 
 	r.Put("/buckets/{bucket}/docs/{id}", handlers.UpsertDocument(cbClient, logger))
 	r.Delete("/buckets/{bucket}/docs/{id}", handlers.DeleteDocument(cbClient, logger))
 
+	// Bulk operations
+	r.Post("/buckets/{bucket}/docs/_bulk_get", handlers.BulkGet(cbClient, logger))
+	r.Post("/buckets/{bucket}/docs/_bulk_upsert", handlers.BulkUpsert(cbClient, logger))
+
 	// N1QL query endpoint
 	r.Post("/query", handlers.QueryHandler(cbClient, logger))
 }

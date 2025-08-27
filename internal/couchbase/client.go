@@ -98,3 +98,8 @@ func (c *Client) Bucket(name string) *gocb.Bucket {
 func (c *Client) Cluster() *gocb.Cluster {
 	return c.cluster
 }
+
+// Config returns the application configuration used to initialize the client.
+func (c *Client) Config() *config.Config {
+	return c.cfg
+}

@@ -35,6 +35,27 @@ pkg/response/response.go
 - Query:
   - POST `/query` with body: `{ "statement": "SELECT ... WHERE x=$x", "params": {"x":1}, "readonly": true }`
 
+### Bulk Operations
+
+- POST `/buckets/{bucket}/docs/_bulk_get`
+  - Request:
+    ```
+    {"ids":["user::1","user::2"],"scope":"app","collection":"profiles"}
+    ```
+  - Limits: ids 1…1000 (configurable via `BULK_GET_MAX_IDS`)
+  - Response: 200 with per-item results; `ok:false` includes `{code,message}` (e.g., `not_found`)
+
+- POST `/buckets/{bucket}/docs/_bulk_upsert`
+  - Request:
+    ```
+    {"items":[{"id":"user::1","doc":{"name":"A"},"ttl_seconds":3600},{"id":"user::2","doc":{"name":"B"}}],"scope":"app","collection":"profiles","durability":"none"}
+    ```
+  - Limits: items 1…500 (configurable via `BULK_UPSERT_MAX_ITEMS`)
+  - Durability: `none` (default), `majority`, `persist_to_majority` (maps to SDK levels)
+  - Response: 200 with per-item `ok/cas` or `{code,message}` (e.g., `invalid` for bad item)
+
+Concurrency: worker pool bound by `BULK_MAX_WORKERS` (default 8). Per-request timeout `BULK_HANDLER_TIMEOUT` (default 5s). 503 when cluster unreachable.
+
 All handlers return JSON with consistent fields like `id`, `cas`, `content`, `deleted`. Errors use safe messages and include `request_id` in panic responses via middleware.
 
 ### Configuration
