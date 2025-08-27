@@ -99,7 +99,7 @@ func GetDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			response.Error(w, http.StatusServiceUnavailable, err)
 			return
 		}
-		res, err := coll.Get(id, nil)
+		res, err := coll.Get(id, &gocb.GetOptions{Context: r.Context()})
 		if err != nil {
 			status := mapErrorToStatus(err)
 			response.Error(w, status, err)
@@ -164,7 +164,7 @@ func CreateDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			response.Error(w, http.StatusServiceUnavailable, err)
 			return
 		}
-		res, err := coll.Insert(id, body, nil)
+		res, err := coll.Insert(id, body, &gocb.InsertOptions{Context: r.Context()})
 		if err != nil {
 			status := mapErrorToStatus(err)
 			response.Error(w, status, err)
@@ -215,7 +215,7 @@ func UpsertDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			response.Error(w, http.StatusServiceUnavailable, err)
 			return
 		}
-		res, err := coll.Upsert(id, body, nil)
+		res, err := coll.Upsert(id, body, &gocb.UpsertOptions{Context: r.Context()})
 		if err != nil {
 			status := mapErrorToStatus(err)
 			response.Error(w, status, err)
@@ -259,7 +259,7 @@ func DeleteDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			response.Error(w, http.StatusServiceUnavailable, err)
 			return
 		}
-		res, err := coll.Remove(id, nil)
+		res, err := coll.Remove(id, &gocb.RemoveOptions{Context: r.Context()})
 		if err != nil {
 			status := mapErrorToStatus(err)
 			response.Error(w, status, err)

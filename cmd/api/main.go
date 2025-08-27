@@ -8,7 +8,6 @@ import (
 
 	// stdhttp "net/http"
 
-	_ "github.com/swaggo/http-swagger/example/go-chi/docs"
 	"go.uber.org/zap"
 
 	"github.com/ssinghl/couchbase-go/internal/config"
