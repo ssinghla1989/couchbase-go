@@ -1,7 +1,7 @@
 APP_NAME=couchbase-go
 MAIN_PKG=./cmd/api
 
-.PHONY: dev build test lint docs tidy tidy-up mod-download
+.PHONY: dev build test test-race lint fmt vet docs tidy tidy-up mod-download staticcheck gosec docker
 
 dev:
 	# Prefer air if installed, else fallback to go run
@@ -13,17 +13,39 @@ build:
 test:
 	go test ./...
 
+test-race:
+	go test ./... -race -count=1 -coverprofile=coverage.out
+
+fmt:
+	gofmt -s -w .
+
+vet:
+	go vet ./...
+
 lint:
 	@command -v golangci-lint >/dev/null 2>&1 && golangci-lint run || echo "golangci-lint not installed; skipping."
-	go vet ./...
+	$(MAKE) vet
+
+staticcheck:
+	@command -v staticcheck >/dev/null 2>&1 && staticcheck ./... || echo "staticcheck not installed; skipping."
+
+gosec:
+	@command -v gosec >/dev/null 2>&1 && gosec ./... || echo "gosec not installed; skipping."
 
 docs:
 	@command -v swag >/dev/null 2>&1 && swag init -g cmd/api/main.go -o ./docs || echo "swag not installed; skipping docs gen."
 
 tidy:
-	go mod tidy
+	go mod tidy -v
+	go mod verify
 
 mod-download:
 	go mod download
+
+# Build docker image
+IMAGE_NAME?=$(APP_NAME):latest
+
+docker:
+	docker build -t $(IMAGE_NAME) .
 
 

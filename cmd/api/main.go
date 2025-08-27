@@ -8,6 +8,7 @@ import (
 
 	// stdhttp "net/http"
 
+	_ "github.com/swaggo/http-swagger/example/go-chi/docs"
 	"go.uber.org/zap"
 
 	"github.com/ssinghl/couchbase-go/internal/config"
@@ -15,6 +16,11 @@ import (
 	httpserver "github.com/ssinghl/couchbase-go/internal/http"
 	"github.com/ssinghl/couchbase-go/internal/logger"
 )
+
+// @title Couchbase Go API
+// @version 1.0
+// @description REST API with Couchbase (gocb v2), chi router, zap logging.
+// @BasePath /
 
 func main() {
 	// Load configuration
@@ -42,7 +48,7 @@ func main() {
 
 	// Router and HTTP server
 	router := httpserver.NewRouter(cfg, log)
-	httpserver.RegisterRoutes(router)
+	httpserver.RegisterRoutes(router, cbClient, log)
 
 	server := httpserver.NewServer(cfg, router)
 	server.Start()

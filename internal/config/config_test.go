@@ -23,9 +23,7 @@ func TestLoad_DefaultsAndValidation(t *testing.T) {
 	if cfg.ServerPort == 0 {
 		t.Fatalf("expected default ServerPort to be set, got 0")
 	}
-	if cfg.CBBucket == "" {
-		t.Fatalf("expected default CBBucket to be set")
+	if cfg.Couchbase.Bucket == "" {
+		t.Fatalf("expected default Couchbase.Bucket to be set")
 	}
 }
-
-

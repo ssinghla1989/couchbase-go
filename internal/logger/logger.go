@@ -14,10 +14,10 @@ type Logger struct {
 }
 
 // New creates a new zap logger based on appEnv and logLevel.
-// appEnv: "dev" uses zap.NewDevelopment, otherwise zap.NewProduction.
+// appEnv: e0 (local) uses development config, others use production.
 func New(appEnv, logLevel string) (*Logger, error) {
 	var cfg zap.Config
-	if strings.EqualFold(appEnv, "dev") {
+	if strings.EqualFold(appEnv, "e0") || strings.EqualFold(appEnv, "dev") {
 		c := zap.NewDevelopmentConfig()
 		cfg = c
 	} else {

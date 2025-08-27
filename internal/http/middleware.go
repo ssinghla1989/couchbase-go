@@ -6,6 +6,8 @@ import (
 
 	chi_middleware "github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
+
+	"github.com/ssinghl/couchbase-go/pkg/response"
 )
 
 // LoggingMiddleware logs request details using zap.
@@ -15,10 +17,13 @@ func LoggingMiddleware(logger *zap.Logger) func(next stdhttp.Handler) stdhttp.Ha
 		return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 			start := time.Now()
 			rw := chi_middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			requestID := chi_middleware.GetReqID(r.Context())
+			if requestID != "" {
+				rw.Header().Set("X-Request-ID", requestID)
+			}
 			next.ServeHTTP(rw, r)
 			dur := time.Since(start)
 
-			requestID := chi_middleware.GetReqID(r.Context())
 			logger.Info("http_request",
 				zap.String("method", r.Method),
 				zap.String("path", r.URL.Path),
@@ -38,8 +43,13 @@ func Recoverer(logger *zap.Logger) func(next stdhttp.Handler) stdhttp.Handler {
 		return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 			defer func() {
 				if rec := recover(); rec != nil {
-					logger.Error("panic recovered", zap.Any("error", rec), zap.Stack("stack"))
-					w.WriteHeader(stdhttp.StatusInternalServerError)
+					requestID := chi_middleware.GetReqID(r.Context())
+					logger.Error("panic recovered", zap.Any("error", rec), zap.String("request_id", requestID), zap.Stack("stack"))
+					response.JSON(w, stdhttp.StatusInternalServerError, map[string]any{
+						"error":      stdhttp.StatusText(stdhttp.StatusInternalServerError),
+						"message":    "unexpected server error",
+						"request_id": requestID,
+					})
 				}
 			}()
 			next.ServeHTTP(w, r)

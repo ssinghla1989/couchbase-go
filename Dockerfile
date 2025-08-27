@@ -18,8 +18,11 @@ WORKDIR /srv
 COPY --from=builder /app/bin/api /usr/local/bin/api
 
 ENV SERVER_PORT=8080
+# Set memory limit hint for Go runtime (adjust at deploy time)
+ENV GOMEMLIMIT=256MiB
 EXPOSE 8080
 
+# Run as non-root user
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/api"]
 

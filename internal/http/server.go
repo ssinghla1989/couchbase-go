@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	stdhttp "net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -25,14 +26,37 @@ func NewRouter(cfg *config.Config, logger *zap.Logger) *chi.Mux {
 	r.Use(chi_middleware.Timeout(cfg.RequestTimeout))
 
 	// CORS
-	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{cfg.CORSAllowedOrigins},
+	allowedOrigins := []string{"*"}
+	if strings.TrimSpace(cfg.CORSAllowedOrigins) != "" {
+		// split CSV, trim spaces
+		parts := strings.Split(cfg.CORSAllowedOrigins, ",")
+		allowedOrigins = make([]string, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				allowedOrigins = append(allowedOrigins, p)
+			}
+		}
+		if len(allowedOrigins) == 0 {
+			allowedOrigins = []string{"*"}
+		}
+	}
+	corsOpts := cors.Options{
+		AllowedOrigins:   allowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		ExposedHeaders:   []string{"Link"},
-		AllowCredentials: true,
+		AllowCredentials: false,
 		MaxAge:           300,
-	}))
+	}
+	// If wildcard is not used, it's safe to allow credentials when explicitly listing origins
+	for _, o := range allowedOrigins {
+		if o != "*" {
+			corsOpts.AllowCredentials = true
+			break
+		}
+	}
+	r.Use(cors.Handler(corsOpts))
 
 	return r
 }
@@ -46,11 +70,12 @@ type HTTPServer struct {
 func NewServer(cfg *config.Config, router stdhttp.Handler) *HTTPServer {
 	return &HTTPServer{
 		Server: &stdhttp.Server{
-			Addr:         fmt.Sprintf(":%d", cfg.ServerPort),
-			Handler:      router,
-			ReadTimeout:  cfg.ServerReadTimeout,
-			WriteTimeout: cfg.ServerWriteTimeout,
-			IdleTimeout:  cfg.ServerIdleTimeout,
+			Addr:              fmt.Sprintf(":%d", cfg.ServerPort),
+			Handler:           router,
+			ReadTimeout:       cfg.ServerReadTimeout,
+			ReadHeaderTimeout: cfg.ServerReadHeaderTimeout,
+			WriteTimeout:      cfg.ServerWriteTimeout,
+			IdleTimeout:       cfg.ServerIdleTimeout,
 		},
 	}
 }
