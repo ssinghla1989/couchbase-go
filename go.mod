@@ -11,7 +11,6 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
 	github.com/swaggo/http-swagger v1.3.4
-	github.com/swaggo/http-swagger/example/go-chi v0.0.0-20250521103423-c7b1da04c24a
 	go.uber.org/zap v1.27.0
 )
 
