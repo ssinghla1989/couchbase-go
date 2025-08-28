@@ -1,0 +1,782 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "REST API with Couchbase (gocb v2), chi router, zap logging.",
+        "title": "Couchbase Go API",
+        "contact": {},
+        "version": "1.0"
+    },
+    "basePath": "/",
+    "paths": {
+        "/buckets/{bucket}/docs": {
+            "post": {
+                "description": "Create a new document with server-generated UUID",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "summary": "Create document",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Bucket name",
+                        "name": "bucket",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Scope name",
+                        "name": "scope",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Collection name",
+                        "name": "collection",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "ID prefix",
+                        "name": "prefix",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        },
+                        "headers": {
+                            "ETag": {
+                                "type": "string",
+                                "description": "CAS ETag of the created document (quoted)"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/buckets/{bucket}/docs/_bulk_get": {
+            "post": {
+                "description": "Best-effort fetch multiple documents; per-item result included. 200 even with partial failures.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "summary": "Bulk get documents",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Bucket name",
+                        "name": "bucket",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Scope name (default _default)",
+                        "name": "scope",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Collection name (default _default)",
+                        "name": "collection",
+                        "in": "query"
+                    },
+                    {
+                        "description": "Bulk get request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.bulkGetRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.bulkGetResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/buckets/{bucket}/docs/_bulk_upsert": {
+            "post": {
+                "description": "Best-effort upsert multiple documents; per-item result included. 200 even with partial failures.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "summary": "Bulk upsert documents",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Bucket name",
+                        "name": "bucket",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Scope name (default _default)",
+                        "name": "scope",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Collection name (default _default)",
+                        "name": "collection",
+                        "in": "query"
+                    },
+                    {
+                        "description": "Bulk upsert request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.bulkUpsertRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.bulkUpsertResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/buckets/{bucket}/docs/{id}": {
+            "get": {
+                "description": "Fetch a document by ID from a Couchbase bucket",
+                "summary": "Get document",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Bucket name",
+                        "name": "bucket",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Document ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Scope name",
+                        "name": "scope",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Collection name",
+                        "name": "collection",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        },
+                        "headers": {
+                            "ETag": {
+                                "type": "string",
+                                "description": "CAS ETag of the document (quoted)"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Upsert or replace a document. Conditional headers supported: If-None-Match:* for create-only; If-Match:\"\u003ccas\u003e\" for CAS-protected replace. Body fallbacks supported when headers not provided.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "summary": "Upsert document (CAS-protected)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Bucket name",
+                        "name": "bucket",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Document ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Scope name",
+                        "name": "scope",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Collection name",
+                        "name": "collection",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Use * for create-only",
+                        "name": "If-None-Match",
+                        "in": "header"
+                    },
+                    {
+                        "type": "string",
+                        "description": "ETag with CAS value, quoted",
+                        "name": "If-Match",
+                        "in": "header"
+                    },
+                    {
+                        "description": "{",
+                        "name": "payload",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        },
+                        "headers": {
+                            "ETag": {
+                                "type": "string",
+                                "description": "CAS ETag of the updated document (quoted)"
+                            }
+                        }
+                    },
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        },
+                        "headers": {
+                            "ETag": {
+                                "type": "string",
+                                "description": "CAS ETag of the created document (quoted)"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Delete a document. If `If-Match:\"\u003ccas\u003e\"` header (or body `if_match_cas`) is provided, the delete is CAS-protected. When `REQUIRE_CAS_ON_DELETE=true`, missing CAS returns 428.",
+                "produces": [
+                    "application/json"
+                ],
+                "summary": "Delete document (CAS-protected)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Bucket name",
+                        "name": "bucket",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Document ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Scope name",
+                        "name": "scope",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Collection name",
+                        "name": "collection",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "ETag with CAS value, quoted",
+                        "name": "If-Match",
+                        "in": "header"
+                    },
+                    {
+                        "description": "{",
+                        "name": "payload",
+                        "in": "body",
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        },
+                        "headers": {
+                            "ETag": {
+                                "type": "string",
+                                "description": "CAS ETag of the deleted document (quoted)"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "428": {
+                        "description": "Precondition Required",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "head": {
+                "description": "HEAD existence check; returns 200 with ETag when exists; 404 when missing",
+                "summary": "Document existence check",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Bucket name",
+                        "name": "bucket",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Document ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Scope name",
+                        "name": "scope",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Collection name",
+                        "name": "collection",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK (no body)",
+                        "headers": {
+                            "ETag": {
+                                "type": "string",
+                                "description": "CAS ETag of the document (quoted)"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found (no body)"
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/buckets/{bucket}/docs/{id}/meta": {
+            "get": {
+                "description": "Fetch lightweight metadata (CAS and expiry) for a document",
+                "produces": [
+                    "application/json"
+                ],
+                "summary": "Get document metadata",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Bucket name",
+                        "name": "bucket",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Document ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Scope name",
+                        "name": "scope",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Collection name",
+                        "name": "collection",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        },
+                        "headers": {
+                            "ETag": {
+                                "type": "string",
+                                "description": "CAS ETag of the document (quoted)"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/query": {
+            "post": {
+                "description": "Run parameterized N1QL query (readonly by default)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "summary": "Execute N1QL query",
+                "parameters": [
+                    {
+                        "description": "Query request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.queryRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "handlers.bulkError": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.bulkGetItemResult": {
+            "type": "object",
+            "properties": {
+                "cas": {
+                    "type": "string"
+                },
+                "content": {},
+                "content_type": {
+                    "type": "string"
+                },
+                "error": {
+                    "$ref": "#/definitions/handlers.bulkError"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "ok": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "handlers.bulkGetRequest": {
+            "type": "object",
+            "properties": {
+                "collection": {
+                    "type": "string"
+                },
+                "ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "scope": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.bulkGetResponse": {
+            "type": "object",
+            "properties": {
+                "bucket": {
+                    "type": "string"
+                },
+                "collection": {
+                    "type": "string"
+                },
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handlers.bulkGetItemResult"
+                    }
+                },
+                "scope": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.bulkUpsertItemResult": {
+            "type": "object",
+            "properties": {
+                "cas": {
+                    "type": "string"
+                },
+                "error": {
+                    "$ref": "#/definitions/handlers.bulkError"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "ok": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "handlers.bulkUpsertRequest": {
+            "type": "object"
+        },
+        "handlers.bulkUpsertResponse": {
+            "type": "object",
+            "properties": {
+                "bucket": {
+                    "type": "string"
+                },
+                "collection": {
+                    "type": "string"
+                },
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handlers.bulkUpsertItemResult"
+                    }
+                },
+                "scope": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.queryRequest": {
+            "type": "object",
+            "properties": {
+                "params": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "readonly": {
+                    "type": "boolean"
+                },
+                "statement": {
+                    "type": "string"
+                }
+            }
+        }
+    }
+}

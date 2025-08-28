@@ -22,7 +22,9 @@ func Error(w http.ResponseWriter, status int, err error) {
 		return
 	}
 	JSON(w, status, map[string]any{
-		"error":   http.StatusText(status),
-		"message": err.Error(),
+		"error": map[string]any{
+			"code":    http.StatusText(status),
+			"message": err.Error(),
+		},
 	})
 }

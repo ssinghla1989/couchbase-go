@@ -51,9 +51,11 @@ func Recoverer(logger *zap.Logger) func(next stdhttp.Handler) stdhttp.Handler {
 					requestID := chi_middleware.GetReqID(r.Context())
 					logger.Error("panic recovered", zap.Any("error", rec), zap.String("request_id", requestID), zap.Stack("stack"))
 					response.JSON(w, stdhttp.StatusInternalServerError, map[string]any{
-						"error":      stdhttp.StatusText(stdhttp.StatusInternalServerError),
-						"message":    "unexpected server error",
-						"request_id": requestID,
+						"error": map[string]any{
+							"code":       stdhttp.StatusText(stdhttp.StatusInternalServerError),
+							"message":    "unexpected server error",
+							"request_id": requestID,
+						},
 					})
 				}
 			}()

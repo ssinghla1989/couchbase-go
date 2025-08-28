@@ -213,13 +213,11 @@ func BulkGet(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			}
 		}
 
-		coll, err := collectionFor(cb, bucketName, req.Scope, req.Collection)
+		coll, _, err := resolveCollectionHTTP(cb, bucketName, req.Scope, req.Collection, r.Context())
 		if err != nil {
 			response.Error(w, http.StatusServiceUnavailable, err)
 			return
 		}
-
-
 
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
@@ -401,13 +399,11 @@ func BulkUpsert(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			}
 		}
 
-		coll, err := collectionFor(cb, bucketName, req.Scope, req.Collection)
+		coll, _, err := resolveCollectionHTTP(cb, bucketName, req.Scope, req.Collection, r.Context())
 		if err != nil {
 			response.Error(w, http.StatusServiceUnavailable, err)
 			return
 		}
-
-
 
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()

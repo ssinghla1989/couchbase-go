@@ -15,7 +15,7 @@ type Config struct {
 	AppEnv                  string        `env:"APP_ENV" envDefault:"e0" validate:"oneof=e0 e1 e2 e3"`
 	LogLevel                string        `env:"LOG_LEVEL" envDefault:"info" validate:"oneof=debug info warn error dpanic panic fatal"`
 	ServerPort              int           `env:"SERVER_PORT" envDefault:"8080" validate:"min=1,max=65535"`
-	RequestTimeout          time.Duration `env:"REQUEST_TIMEOUT" envDefault:"30s"`
+	RequestTimeout          time.Duration `env:"REQUEST_TIMEOUT" envDefault:"5s"`
 	ServerReadTimeout       time.Duration `env:"SERVER_READ_TIMEOUT" envDefault:"15s"`
 	ServerWriteTimeout      time.Duration `env:"SERVER_WRITE_TIMEOUT" envDefault:"15s"`
 	ServerIdleTimeout       time.Duration `env:"SERVER_IDLE_TIMEOUT" envDefault:"60s"`
@@ -23,7 +23,7 @@ type Config struct {
 	ShutdownTimeout         time.Duration `env:"SHUTDOWN_TIMEOUT" envDefault:"20s"`
 
 	// CORS (comma-separated origins, * allowed for all)
-	CORSAllowedOrigins string `env:"CORS_ALLOWED_ORIGINS" envDefault:"*"`
+	CORSAllowedOrigins string `env:"CORS_ALLOWED_ORIGINS" envDefault:""`
 
 	// Couchbase (single-cluster)
 	Couchbase CouchbaseConfig

@@ -26,7 +26,7 @@ func NewRouter(cfg *config.Config, logger *zap.Logger) *chi.Mux {
 	r.Use(chi_middleware.Timeout(cfg.RequestTimeout))
 
 	// CORS
-	allowedOrigins := []string{"*"}
+	allowedOrigins := []string{}
 	if strings.TrimSpace(cfg.CORSAllowedOrigins) != "" {
 		// split CSV, trim spaces
 		parts := strings.Split(cfg.CORSAllowedOrigins, ",")
@@ -37,9 +37,6 @@ func NewRouter(cfg *config.Config, logger *zap.Logger) *chi.Mux {
 				allowedOrigins = append(allowedOrigins, p)
 			}
 		}
-		if len(allowedOrigins) == 0 {
-			allowedOrigins = []string{"*"}
-		}
 	}
 	corsOpts := cors.Options{
 		AllowedOrigins:   allowedOrigins,
@@ -49,7 +46,7 @@ func NewRouter(cfg *config.Config, logger *zap.Logger) *chi.Mux {
 		AllowCredentials: false,
 		MaxAge:           300,
 	}
-	// If wildcard is not used, it's safe to allow credentials when explicitly listing origins
+	// If wildcard is not used and at least one origin is configured, it's safe to allow credentials
 	for _, o := range allowedOrigins {
 		if o != "*" {
 			corsOpts.AllowCredentials = true

@@ -1,0 +1,534 @@
+basePath: /
+definitions:
+  handlers.bulkError:
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+    type: object
+  handlers.bulkGetItemResult:
+    properties:
+      cas:
+        type: string
+      content: {}
+      content_type:
+        type: string
+      error:
+        $ref: '#/definitions/handlers.bulkError'
+      id:
+        type: string
+      ok:
+        type: boolean
+    type: object
+  handlers.bulkGetRequest:
+    properties:
+      collection:
+        type: string
+      ids:
+        items:
+          type: string
+        type: array
+      scope:
+        type: string
+    type: object
+  handlers.bulkGetResponse:
+    properties:
+      bucket:
+        type: string
+      collection:
+        type: string
+      results:
+        items:
+          $ref: '#/definitions/handlers.bulkGetItemResult'
+        type: array
+      scope:
+        type: string
+    type: object
+  handlers.bulkUpsertItemResult:
+    properties:
+      cas:
+        type: string
+      error:
+        $ref: '#/definitions/handlers.bulkError'
+      id:
+        type: string
+      ok:
+        type: boolean
+    type: object
+  handlers.bulkUpsertRequest:
+    type: object
+  handlers.bulkUpsertResponse:
+    properties:
+      bucket:
+        type: string
+      collection:
+        type: string
+      results:
+        items:
+          $ref: '#/definitions/handlers.bulkUpsertItemResult'
+        type: array
+      scope:
+        type: string
+    type: object
+  handlers.queryRequest:
+    properties:
+      params:
+        additionalProperties: {}
+        type: object
+      readonly:
+        type: boolean
+      statement:
+        type: string
+    type: object
+info:
+  contact: {}
+  description: REST API with Couchbase (gocb v2), chi router, zap logging.
+  title: Couchbase Go API
+  version: "1.0"
+paths:
+  /buckets/{bucket}/docs:
+    post:
+      consumes:
+      - application/json
+      description: Create a new document with server-generated UUID
+      parameters:
+      - description: Bucket name
+        in: path
+        name: bucket
+        required: true
+        type: string
+      - description: Scope name
+        in: query
+        name: scope
+        type: string
+      - description: Collection name
+        in: query
+        name: collection
+        type: string
+      - description: ID prefix
+        in: query
+        name: prefix
+        type: string
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          headers:
+            ETag:
+              description: CAS ETag of the created document (quoted)
+              type: string
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Create document
+  /buckets/{bucket}/docs/_bulk_get:
+    post:
+      consumes:
+      - application/json
+      description: Best-effort fetch multiple documents; per-item result included.
+        200 even with partial failures.
+      parameters:
+      - description: Bucket name
+        in: path
+        name: bucket
+        required: true
+        type: string
+      - description: Scope name (default _default)
+        in: query
+        name: scope
+        type: string
+      - description: Collection name (default _default)
+        in: query
+        name: collection
+        type: string
+      - description: Bulk get request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.bulkGetRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.bulkGetResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Bulk get documents
+  /buckets/{bucket}/docs/_bulk_upsert:
+    post:
+      consumes:
+      - application/json
+      description: Best-effort upsert multiple documents; per-item result included.
+        200 even with partial failures.
+      parameters:
+      - description: Bucket name
+        in: path
+        name: bucket
+        required: true
+        type: string
+      - description: Scope name (default _default)
+        in: query
+        name: scope
+        type: string
+      - description: Collection name (default _default)
+        in: query
+        name: collection
+        type: string
+      - description: Bulk upsert request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.bulkUpsertRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.bulkUpsertResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Bulk upsert documents
+  /buckets/{bucket}/docs/{id}:
+    delete:
+      description: Delete a document. If `If-Match:"<cas>"` header (or body `if_match_cas`)
+        is provided, the delete is CAS-protected. When `REQUIRE_CAS_ON_DELETE=true`,
+        missing CAS returns 428.
+      parameters:
+      - description: Bucket name
+        in: path
+        name: bucket
+        required: true
+        type: string
+      - description: Document ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Scope name
+        in: query
+        name: scope
+        type: string
+      - description: Collection name
+        in: query
+        name: collection
+        type: string
+      - description: ETag with CAS value, quoted
+        in: header
+        name: If-Match
+        type: string
+      - description: '{'
+        in: body
+        name: payload
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          headers:
+            ETag:
+              description: CAS ETag of the deleted document (quoted)
+              type: string
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "428":
+          description: Precondition Required
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Delete document (CAS-protected)
+    get:
+      description: Fetch a document by ID from a Couchbase bucket
+      parameters:
+      - description: Bucket name
+        in: path
+        name: bucket
+        required: true
+        type: string
+      - description: Document ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Scope name
+        in: query
+        name: scope
+        type: string
+      - description: Collection name
+        in: query
+        name: collection
+        type: string
+      responses:
+        "200":
+          description: OK
+          headers:
+            ETag:
+              description: CAS ETag of the document (quoted)
+              type: string
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get document
+    head:
+      description: HEAD existence check; returns 200 with ETag when exists; 404 when
+        missing
+      parameters:
+      - description: Bucket name
+        in: path
+        name: bucket
+        required: true
+        type: string
+      - description: Document ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Scope name
+        in: query
+        name: scope
+        type: string
+      - description: Collection name
+        in: query
+        name: collection
+        type: string
+      responses:
+        "200":
+          description: OK (no body)
+          headers:
+            ETag:
+              description: CAS ETag of the document (quoted)
+              type: string
+        "404":
+          description: Not Found (no body)
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Document existence check
+    put:
+      consumes:
+      - application/json
+      description: 'Upsert or replace a document. Conditional headers supported: If-None-Match:*
+        for create-only; If-Match:"<cas>" for CAS-protected replace. Body fallbacks
+        supported when headers not provided.'
+      parameters:
+      - description: Bucket name
+        in: path
+        name: bucket
+        required: true
+        type: string
+      - description: Document ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Scope name
+        in: query
+        name: scope
+        type: string
+      - description: Collection name
+        in: query
+        name: collection
+        type: string
+      - description: Use * for create-only
+        in: header
+        name: If-None-Match
+        type: string
+      - description: ETag with CAS value, quoted
+        in: header
+        name: If-Match
+        type: string
+      - description: '{'
+        in: body
+        name: payload
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          headers:
+            ETag:
+              description: CAS ETag of the updated document (quoted)
+              type: string
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "201":
+          description: Created
+          headers:
+            ETag:
+              description: CAS ETag of the created document (quoted)
+              type: string
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Upsert document (CAS-protected)
+  /buckets/{bucket}/docs/{id}/meta:
+    get:
+      description: Fetch lightweight metadata (CAS and expiry) for a document
+      parameters:
+      - description: Bucket name
+        in: path
+        name: bucket
+        required: true
+        type: string
+      - description: Document ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Scope name
+        in: query
+        name: scope
+        type: string
+      - description: Collection name
+        in: query
+        name: collection
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          headers:
+            ETag:
+              description: CAS ETag of the document (quoted)
+              type: string
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get document metadata
+  /query:
+    post:
+      consumes:
+      - application/json
+      description: Run parameterized N1QL query (readonly by default)
+      parameters:
+      - description: Query request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.queryRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Execute N1QL query
+swagger: "2.0"

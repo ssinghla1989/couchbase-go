@@ -31,6 +31,10 @@ var (
 	overrideDelete     func(bucket, scope, collection, id string) (uint64, error)
 	overrideReplaceCAS func(bucket, scope, collection, id string, cas uint64, body json.RawMessage) (uint64, error)
 	overrideDeleteCAS  func(bucket, scope, collection, id string, cas uint64) (uint64, error)
+	// TTL-aware overrides used by tests to observe provided expiry
+	overrideInsertWithExpiry     func(bucket, scope, collection, id string, body json.RawMessage, expirySeconds int64) (uint64, error)
+	overrideUpsertWithExpiry     func(bucket, scope, collection, id string, body json.RawMessage, expirySeconds int64) (uint64, error)
+	overrideReplaceCASWithExpiry func(bucket, scope, collection, id string, cas uint64, body json.RawMessage, expirySeconds int64) (uint64, error)
 )
 
 func getScopeAndCollection(r *http.Request) (string, string) {
@@ -60,33 +64,13 @@ func mapErrorToStatus(err error) int {
 	return http.StatusInternalServerError
 }
 
-func collectionFor(cb *couchbase.Client, bucketName, scopeName, collectionName string) (*gocb.Collection, error) {
-	if cb == nil || cb.Cluster() == nil {
-		return nil, fmt.Errorf("client not initialized")
-	}
-	bucket := cb.Bucket(bucketName)
-	_ = bucket.WaitUntilReady(2*time.Second, nil)
-	if scopeName == "" || collectionName == "" {
-		return bucket.DefaultCollection(), nil
-	}
-	return bucket.Scope(scopeName).Collection(collectionName), nil
-}
-
-// resolveCollection enforces scope/collection pairing and waits for readiness (2s) using the request context.
-func resolveCollection(cb *couchbase.Client, bucketName, scopeName, collectionName string, ctx context.Context) (*gocb.Collection, int, error) {
-	if (scopeName == "" && collectionName != "") || (scopeName != "" && collectionName == "") {
-		return nil, http.StatusBadRequest, fmt.Errorf("both scope and collection must be supplied together")
-	}
-	bucket := cb.Bucket(bucketName)
-	readyCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	if err := bucket.WaitUntilReady(2*time.Second, &gocb.WaitUntilReadyOptions{Context: readyCtx}); err != nil {
+// resolveCollectionHTTP wraps couchbase.ResolveCollection and maps errors to HTTP status.
+func resolveCollectionHTTP(cb *couchbase.Client, bucketName, scopeName, collectionName string, ctx context.Context) (*gocb.Collection, int, error) {
+	coll, err := couchbase.ResolveCollection(cb, bucketName, scopeName, collectionName, ctx)
+	if err != nil {
 		return nil, http.StatusServiceUnavailable, fmt.Errorf("bucket not ready")
 	}
-	if scopeName == "" && collectionName == "" {
-		return bucket.DefaultCollection(), http.StatusOK, nil
-	}
-	return bucket.Scope(scopeName).Collection(collectionName), http.StatusOK, nil
+	return coll, http.StatusOK, nil
 }
 
 // writeJSON ensures consistent content-type and body schema.
@@ -159,6 +143,10 @@ func parseUpsertBody(r *http.Request, logger *zap.Logger) (upsertInput, int, err
 		}
 		if ttlSeconds < 0 {
 			return in, http.StatusBadRequest, fmt.Errorf("ttl_seconds must be >= 0")
+		}
+		// enforce upper bound (approx int32 max seconds)
+		if ttlSeconds > 2147483647 {
+			return in, http.StatusBadRequest, fmt.Errorf("invalid ttl_seconds")
 		}
 		d := time.Duration(ttlSeconds) * time.Second
 		in.Expiry = &d
@@ -316,7 +304,7 @@ func GetDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			return
 		}
 
-		coll, code, err := resolveCollection(cb, bucket, scope, collection, r.Context())
+		coll, code, err := resolveCollectionHTTP(cb, bucket, scope, collection, r.Context())
 		if err != nil {
 			if code >= 500 {
 				if logger != nil {
@@ -382,9 +370,25 @@ func CreateDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 		scope, collection := getScopeAndCollection(r)
 		prefix := r.URL.Query().Get("prefix")
 
-		var body json.RawMessage
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			response.Error(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
+		// limit body and parse with shared validator to allow ttl_seconds
+		r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+		in, code, err := parseUpsertBody(r, logger)
+		if err != nil {
+			if code >= 500 {
+				if logger != nil {
+					logger.Error("create validation failed", zap.Error(err))
+				}
+			} else {
+				if logger != nil {
+					logger.Warn("create validation failed", zap.Error(err))
+				}
+			}
+			response.JSON(w, code, map[string]any{"code": "invalid", "message": err.Error()})
+			return
+		}
+		// Do not allow conditional semantics on POST
+		if in.CreateOnly || in.MatchCAS != nil {
+			response.JSON(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": "conditional fields are not supported on create"})
 			return
 		}
 
@@ -393,8 +397,32 @@ func CreateDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			id = prefix + id
 		}
 
-		if overrideInsert != nil {
-			cas, err := overrideInsert(bucket, scope, collection, id, body)
+		if overrideInsertWithExpiry != nil || overrideInsert != nil {
+			if overrideInsertWithExpiry != nil {
+				var ttlSeconds int64
+				if in.Expiry != nil {
+					ttlSeconds = int64((*in.Expiry) / time.Second)
+				}
+				cas, err := overrideInsertWithExpiry(bucket, scope, collection, id, in.Doc, ttlSeconds)
+				if err != nil {
+					status := mapErrorToStatus(err)
+					if status >= 500 {
+						if logger != nil {
+							logger.Error("override insert failed", zap.Error(err))
+						}
+					} else {
+						if logger != nil {
+							logger.Warn("override insert failed", zap.Error(err))
+						}
+					}
+					response.JSON(w, status, map[string]any{"code": http.StatusText(status), "message": err.Error()})
+					return
+				}
+				setETag(w, gocb.Cas(cas))
+				response.JSON(w, http.StatusCreated, map[string]any{"id": id, "cas": fmt.Sprintf("%d", cas)})
+				return
+			}
+			cas, err := overrideInsert(bucket, scope, collection, id, in.Doc)
 			if err != nil {
 				status := mapErrorToStatus(err)
 				if status >= 500 {
@@ -414,7 +442,7 @@ func CreateDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			return
 		}
 
-		coll, code, err := resolveCollection(cb, bucket, scope, collection, r.Context())
+		coll, code, err := resolveCollectionHTTP(cb, bucket, scope, collection, r.Context())
 		if err != nil {
 			if code >= 500 {
 				if logger != nil {
@@ -428,7 +456,11 @@ func CreateDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			response.JSON(w, code, map[string]any{"code": "unavailable", "message": err.Error()})
 			return
 		}
-		res, err := coll.Insert(id, body, &gocb.InsertOptions{Context: r.Context()})
+		var exp time.Duration
+		if in.Expiry != nil {
+			exp = *in.Expiry
+		}
+		res, err := coll.Insert(id, in.Doc, &gocb.InsertOptions{Context: r.Context(), Expiry: exp})
 		if err != nil {
 			status := mapErrorToStatus(err)
 			if status >= 500 {
@@ -494,7 +526,38 @@ func UpsertDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 		}
 
 		// Overrides first
-		if in.CreateOnly && overrideInsert != nil {
+		if in.CreateOnly && (overrideInsertWithExpiry != nil || overrideInsert != nil) {
+			if overrideInsertWithExpiry != nil {
+				var ttlSeconds int64
+				if in.Expiry != nil {
+					ttlSeconds = int64((*in.Expiry) / time.Second)
+				}
+				cas, err := overrideInsertWithExpiry(bucket, scope, collection, id, in.Doc, ttlSeconds)
+				if err != nil {
+					if errors.Is(err, gocb.ErrDocumentExists) {
+						if logger != nil {
+							logger.Warn("create-only conflict", zap.String("id", id), zap.String("bucket", bucket), zap.String("scope", scope), zap.String("collection", collection), zap.String("op", "insert"))
+						}
+						response.JSON(w, http.StatusConflict, map[string]any{"code": "conflict_exists", "message": "document already exists"})
+						return
+					}
+					status := mapErrorToStatus(err)
+					if status >= 500 {
+						if logger != nil {
+							logger.Error("override insert failed", zap.Error(err))
+						}
+					} else {
+						if logger != nil {
+							logger.Warn("override insert failed", zap.Error(err))
+						}
+					}
+					response.JSON(w, status, map[string]any{"code": http.StatusText(status), "message": err.Error()})
+					return
+				}
+				setETag(w, gocb.Cas(cas))
+				response.JSON(w, http.StatusCreated, map[string]any{"id": id, "cas": fmt.Sprintf("%d", cas)})
+				return
+			}
 			cas, err := overrideInsert(bucket, scope, collection, id, in.Doc)
 			if err != nil {
 				if errors.Is(err, gocb.ErrDocumentExists) {
@@ -522,7 +585,42 @@ func UpsertDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			return
 		}
 
-		if in.MatchCAS != nil && overrideReplaceCAS != nil {
+		if in.MatchCAS != nil && (overrideReplaceCASWithExpiry != nil || overrideReplaceCAS != nil) {
+			if overrideReplaceCASWithExpiry != nil {
+				var ttlSeconds int64
+				if in.Expiry != nil {
+					ttlSeconds = int64((*in.Expiry) / time.Second)
+				}
+				newCas, err := overrideReplaceCASWithExpiry(bucket, scope, collection, id, uint64(*in.MatchCAS), in.Doc, ttlSeconds)
+				if err != nil {
+					if errors.Is(err, gocb.ErrCasMismatch) {
+						if logger != nil {
+							logger.Warn("CAS mismatch on replace", zap.String("id", id), zap.String("bucket", bucket), zap.String("scope", scope), zap.String("collection", collection), zap.Uint64("expected_cas", uint64(*in.MatchCAS)), zap.String("op", "replace"))
+						}
+						response.JSON(w, http.StatusConflict, map[string]any{"code": "cas_mismatch", "message": "cas mismatch"})
+						return
+					}
+					if errors.Is(err, gocb.ErrDocumentNotFound) {
+						response.JSON(w, http.StatusNotFound, map[string]any{"code": "not_found", "message": "document not found"})
+						return
+					}
+					status := mapErrorToStatus(err)
+					if status >= 500 {
+						if logger != nil {
+							logger.Error("override replace failed", zap.Error(err))
+						}
+					} else {
+						if logger != nil {
+							logger.Warn("override replace failed", zap.Error(err))
+						}
+					}
+					response.JSON(w, status, map[string]any{"code": http.StatusText(status), "message": err.Error()})
+					return
+				}
+				setETag(w, gocb.Cas(newCas))
+				response.JSON(w, http.StatusOK, map[string]any{"id": id, "cas": fmt.Sprintf("%d", newCas)})
+				return
+			}
 			newCas, err := overrideReplaceCAS(bucket, scope, collection, id, uint64(*in.MatchCAS), in.Doc)
 			if err != nil {
 				if errors.Is(err, gocb.ErrCasMismatch) {
@@ -554,7 +652,31 @@ func UpsertDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			return
 		}
 
-		if in.MatchCAS == nil && !in.CreateOnly && overrideUpsert != nil {
+		if in.MatchCAS == nil && !in.CreateOnly && (overrideUpsertWithExpiry != nil || overrideUpsert != nil) {
+			if overrideUpsertWithExpiry != nil {
+				var ttlSeconds int64
+				if in.Expiry != nil {
+					ttlSeconds = int64((*in.Expiry) / time.Second)
+				}
+				cas, err := overrideUpsertWithExpiry(bucket, scope, collection, id, in.Doc, ttlSeconds)
+				if err != nil {
+					status := mapErrorToStatus(err)
+					if status >= 500 {
+						if logger != nil {
+							logger.Error("override upsert failed", zap.Error(err))
+						}
+					} else {
+						if logger != nil {
+							logger.Warn("override upsert failed", zap.Error(err))
+						}
+					}
+					response.JSON(w, status, map[string]any{"code": http.StatusText(status), "message": err.Error()})
+					return
+				}
+				setETag(w, gocb.Cas(cas))
+				response.JSON(w, http.StatusOK, map[string]any{"id": id, "cas": fmt.Sprintf("%d", cas)})
+				return
+			}
 			cas, err := overrideUpsert(bucket, scope, collection, id, in.Doc)
 			if err != nil {
 				status := mapErrorToStatus(err)
@@ -576,7 +698,7 @@ func UpsertDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 		}
 
 		// Resolve collection
-		coll, code, err := resolveCollection(cb, bucket, scope, collection, r.Context())
+		coll, code, err := resolveCollectionHTTP(cb, bucket, scope, collection, r.Context())
 		if err != nil {
 			if code >= 500 {
 				if logger != nil {
@@ -810,7 +932,7 @@ func DeleteDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 				response.JSON(w, http.StatusOK, map[string]any{"id": id, "deleted": true, "cas": fmt.Sprintf("%d", oldCas)})
 				return
 			}
-			coll, code, err := resolveCollection(cb, bucket, scope, collection, r.Context())
+			coll, code, err := resolveCollectionHTTP(cb, bucket, scope, collection, r.Context())
 			if err != nil {
 				if code >= 500 {
 					if logger != nil {
@@ -877,7 +999,7 @@ func DeleteDocument(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			return
 		}
 
-		coll, code, err := resolveCollection(cb, bucket, scope, collection, r.Context())
+		coll, code, err := resolveCollectionHTTP(cb, bucket, scope, collection, r.Context())
 		if err != nil {
 			if code >= 500 {
 				if logger != nil {
