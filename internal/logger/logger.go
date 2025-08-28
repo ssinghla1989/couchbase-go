@@ -19,9 +19,11 @@ func New(appEnv, logLevel string) (*Logger, error) {
 	var cfg zap.Config
 	if strings.EqualFold(appEnv, "e0") || strings.EqualFold(appEnv, "dev") {
 		c := zap.NewDevelopmentConfig()
+		c.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 		cfg = c
 	} else {
 		c := zap.NewProductionConfig()
+		c.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 		cfg = c
 	}
 
@@ -49,6 +51,9 @@ func New(appEnv, logLevel string) (*Logger, error) {
 	base, err := cfg.Build()
 	if err != nil {
 		return nil, err
+	}
+	if strings.EqualFold(appEnv, "e0") || strings.EqualFold(appEnv, "dev") {
+		base = base.WithOptions(zap.AddCaller())
 	}
 
 	return &Logger{Base: base, Sugar: base.Sugar()}, nil

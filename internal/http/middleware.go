@@ -1,7 +1,9 @@
 package http
 
 import (
+	"net"
 	stdhttp "net/http"
+	"strings"
 	"time"
 
 	chi_middleware "github.com/go-chi/chi/v5/middleware"
@@ -31,6 +33,9 @@ func LoggingMiddleware(logger *zap.Logger) func(next stdhttp.Handler) stdhttp.Ha
 				zap.Int("bytes", rw.BytesWritten()),
 				zap.Duration("duration", dur),
 				zap.String("request_id", requestID),
+				zap.String("remote_ip", getRemoteIP(r)),
+				zap.String("host", r.Host),
+				zap.String("user_agent", r.UserAgent()),
 			)
 		})
 	}
@@ -55,4 +60,22 @@ func Recoverer(logger *zap.Logger) func(next stdhttp.Handler) stdhttp.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func getRemoteIP(r *stdhttp.Request) string {
+	if xfwd := r.Header.Get("X-Forwarded-For"); xfwd != "" {
+		parts := strings.Split(xfwd, ",")
+		ip := strings.TrimSpace(parts[0])
+		if ip != "" {
+			return ip
+		}
+	}
+	if rip := r.Header.Get("X-Real-IP"); rip != "" {
+		return rip
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	return r.RemoteAddr
 }

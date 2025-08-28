@@ -2,7 +2,6 @@ package http
 
 import (
 	"github.com/go-chi/chi/v5"
-	httpSwagger "github.com/swaggo/http-swagger"
 	"go.uber.org/zap"
 
 	"github.com/ssinghl/couchbase-go/internal/couchbase"
@@ -13,8 +12,6 @@ import (
 // RegisterRoutes registers API routes on the router.
 // Intentionally left empty for now; only mounts Swagger UI.
 func RegisterRoutes(r *chi.Mux, cbClient *couchbase.Client, logger *zap.Logger) {
-	// Swagger UI at /swagger/index.html
-	r.Get("/swagger/*", httpSwagger.WrapHandler)
 
 	// Health endpoints for LB/Kubernetes
 	r.Get("/health/liveness", health.LivenessHandler)

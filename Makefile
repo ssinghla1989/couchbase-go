@@ -1,7 +1,7 @@
 APP_NAME=couchbase-go
 MAIN_PKG=./cmd/api
 
-.PHONY: dev build test test-race lint fmt vet docs tidy tidy-up mod-download staticcheck gosec docker
+.PHONY: dev build test test-race lint fmt vet tidy tidy-up mod-download staticcheck gosec docker
 
 dev:
 	# Prefer air if installed, else fallback to go run
@@ -32,8 +32,6 @@ staticcheck:
 gosec:
 	@command -v gosec >/dev/null 2>&1 && gosec ./... || echo "gosec not installed; skipping."
 
-docs:
-	@command -v swag >/dev/null 2>&1 && swag init -g cmd/api/main.go -o ./docs || echo "swag not installed; skipping docs gen."
 
 tidy:
 	go mod tidy -v

@@ -35,6 +35,7 @@ func main() {
 	}
 	defer logFactory.Sync()
 	log := logFactory.Base
+	log = log.With(zap.String("service", "couchbase-go"), zap.String("env", cfg.AppEnv))
 
 	// Initialize Couchbase client
 	cbClient, err := couchbase.NewClient(cfg, log)
@@ -44,6 +45,8 @@ func main() {
 	defer func() {
 		_ = cbClient.Close(context.Background())
 	}()
+
+	// Swagger removed
 
 	// Router and HTTP server
 	router := httpserver.NewRouter(cfg, log)
