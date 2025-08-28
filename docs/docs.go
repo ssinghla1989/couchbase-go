@@ -615,7 +615,7 @@ const docTemplate = `{
         },
         "/query": {
             "post": {
-                "description": "Run parameterized N1QL query (readonly by default)",
+                "description": "Run parameterized N1QL query (SELECT-only; always readonly)",
                 "consumes": [
                     "application/json"
                 ],
@@ -776,9 +776,6 @@ const docTemplate = `{
                 "params": {
                     "type": "object",
                     "additionalProperties": {}
-                },
-                "readonly": {
-                    "type": "boolean"
                 },
                 "statement": {
                     "type": "string"

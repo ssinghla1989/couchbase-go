@@ -23,12 +23,21 @@ var (
 type queryRequest struct {
 	Statement string         `json:"statement"`
 	Params    map[string]any `json:"params"`
-	Readonly  *bool          `json:"readonly"`
 }
 
 func isParameterized(statement string) bool {
 	// naive check: must contain at least one $param token
 	return strings.Contains(statement, "$")
+}
+
+// isSelectStatement returns true if the statement appears to be a SELECT query.
+func isSelectStatement(statement string) bool {
+	s := strings.TrimSpace(strings.ToLower(statement))
+	// skip any leading parenthesis
+	for strings.HasPrefix(s, "(") {
+		s = strings.TrimSpace(s[1:])
+	}
+	return strings.HasPrefix(s, "select")
 }
 
 // QueryHandler executes a parameterized N1QL query.
@@ -52,10 +61,12 @@ func QueryHandler(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			response.Error(w, http.StatusBadRequest, errors.New("statement must be parameterized with $params"))
 			return
 		}
-		readonly := true
-		if req.Readonly != nil {
-			readonly = *req.Readonly
+		// enforce read-only and SELECT-only queries
+		if !isSelectStatement(req.Statement) {
+			response.Error(w, http.StatusBadRequest, errors.New("only SELECT queries are allowed"))
+			return
 		}
+		readonly := true
 
 		// allow test override
 		if overrideQuery != nil {

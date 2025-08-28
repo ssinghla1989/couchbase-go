@@ -76,8 +76,6 @@ definitions:
       params:
         additionalProperties: {}
         type: object
-      readonly:
-        type: boolean
       statement:
         type: string
     type: object
@@ -620,7 +618,7 @@ paths:
     post:
       consumes:
       - application/json
-      description: Run parameterized N1QL query (readonly by default)
+      description: Run parameterized N1QL query (SELECT-only; always readonly)
       parameters:
       - description: Query request
         in: body
