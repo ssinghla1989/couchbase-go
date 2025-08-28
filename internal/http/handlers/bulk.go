@@ -189,6 +189,17 @@ func BulkGet(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			return
 		}
 
+		// override path short-circuit (before any Couchbase usage)
+		if overrideBulkGet != nil {
+			results, err := overrideBulkGet(bucketName, req.Scope, req.Collection, req.IDs)
+			if err != nil {
+				response.Error(w, http.StatusServiceUnavailable, err)
+				return
+			}
+			response.JSON(w, http.StatusOK, bulkGetResponse{Bucket: bucketName, Scope: req.Scope, Collection: req.Collection, Results: results})
+			return
+		}
+
 		// readiness check
 		if overrideBulkReady != nil {
 			if err := overrideBulkReady(timeout); err != nil {
@@ -208,16 +219,7 @@ func BulkGet(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			return
 		}
 
-		// override path
-		if overrideBulkGet != nil {
-			results, err := overrideBulkGet(bucketName, req.Scope, req.Collection, req.IDs)
-			if err != nil {
-				response.Error(w, http.StatusServiceUnavailable, err)
-				return
-			}
-			response.JSON(w, http.StatusOK, bulkGetResponse{Bucket: bucketName, Scope: req.Scope, Collection: req.Collection, Results: results})
-			return
-		}
+
 
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
@@ -375,6 +377,17 @@ func BulkUpsert(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			return
 		}
 
+		// override path short-circuit (before any Couchbase usage)
+		if overrideBulkUpsert != nil {
+			results, err := overrideBulkUpsert(bucketName, req.Scope, req.Collection, req.Durability, req.Items)
+			if err != nil {
+				response.Error(w, http.StatusServiceUnavailable, err)
+				return
+			}
+			response.JSON(w, http.StatusOK, bulkUpsertResponse{Bucket: bucketName, Scope: req.Scope, Collection: req.Collection, Results: results})
+			return
+		}
+
 		// readiness check
 		if overrideBulkReady != nil {
 			if err := overrideBulkReady(timeout); err != nil {
@@ -394,16 +407,7 @@ func BulkUpsert(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			return
 		}
 
-		// override path
-		if overrideBulkUpsert != nil {
-			results, err := overrideBulkUpsert(bucketName, req.Scope, req.Collection, req.Durability, req.Items)
-			if err != nil {
-				response.Error(w, http.StatusServiceUnavailable, err)
-				return
-			}
-			response.JSON(w, http.StatusOK, bulkUpsertResponse{Bucket: bucketName, Scope: req.Scope, Collection: req.Collection, Results: results})
-			return
-		}
+
 
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()

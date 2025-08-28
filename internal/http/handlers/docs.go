@@ -43,22 +43,27 @@ func mapErrorToStatus(err error) int {
 	if err == nil {
 		return http.StatusOK
 	}
-	if errors.Is(err, gocb.ErrDocumentNotFound) {
+	// substring-based mapping to support overrides and generic errors
+	msg := strings.ToLower(err.Error())
+	if errors.Is(err, gocb.ErrDocumentNotFound) || strings.Contains(msg, "not found") {
 		return http.StatusNotFound
 	}
-	if errors.Is(err, gocb.ErrDocumentExists) {
+	if errors.Is(err, gocb.ErrDocumentExists) || strings.Contains(msg, "exists") || strings.Contains(msg, "conflict") {
 		return http.StatusConflict
 	}
-	if errors.Is(err, gocb.ErrCasMismatch) {
+	if errors.Is(err, gocb.ErrCasMismatch) || strings.Contains(msg, "cas mismatch") || strings.Contains(msg, "mismatch") {
 		return http.StatusConflict
 	}
-	if errors.Is(err, gocb.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	if errors.Is(err, gocb.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || strings.Contains(msg, "timeout") || strings.Contains(msg, "unavailable") || strings.Contains(msg, "network") {
 		return http.StatusServiceUnavailable
 	}
 	return http.StatusInternalServerError
 }
 
 func collectionFor(cb *couchbase.Client, bucketName, scopeName, collectionName string) (*gocb.Collection, error) {
+	if cb == nil || cb.Cluster() == nil {
+		return nil, fmt.Errorf("client not initialized")
+	}
 	bucket := cb.Bucket(bucketName)
 	_ = bucket.WaitUntilReady(2*time.Second, nil)
 	if scopeName == "" || collectionName == "" {

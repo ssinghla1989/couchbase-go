@@ -101,5 +101,8 @@ func (c *Client) Cluster() *gocb.Cluster {
 
 // Config returns the application configuration used to initialize the client.
 func (c *Client) Config() *config.Config {
+	if c == nil {
+		return nil
+	}
 	return c.cfg
 }
