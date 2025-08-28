@@ -37,56 +37,7 @@ var (
 	overrideReplaceCASWithExpiry func(bucket, scope, collection, id string, cas uint64, body json.RawMessage, expirySeconds int64) (uint64, error)
 )
 
-func getScopeAndCollection(r *http.Request) (string, string) {
-	scope := r.URL.Query().Get("scope")
-	collection := r.URL.Query().Get("collection")
-	return scope, collection
-}
-
-func mapErrorToStatus(err error) int {
-	if err == nil {
-		return http.StatusOK
-	}
-	// substring-based mapping to support overrides and generic errors
-	msg := strings.ToLower(err.Error())
-	if errors.Is(err, gocb.ErrDocumentNotFound) || strings.Contains(msg, "not found") {
-		return http.StatusNotFound
-	}
-	if errors.Is(err, gocb.ErrDocumentExists) || strings.Contains(msg, "exists") || strings.Contains(msg, "conflict") {
-		return http.StatusConflict
-	}
-	if errors.Is(err, gocb.ErrCasMismatch) || strings.Contains(msg, "cas mismatch") || strings.Contains(msg, "mismatch") {
-		return http.StatusConflict
-	}
-	if errors.Is(err, gocb.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || strings.Contains(msg, "timeout") || strings.Contains(msg, "unavailable") || strings.Contains(msg, "network") {
-		return http.StatusServiceUnavailable
-	}
-	return http.StatusInternalServerError
-}
-
-// resolveCollectionHTTP wraps couchbase.ResolveCollection and maps errors to HTTP status.
-func resolveCollectionHTTP(cb *couchbase.Client, bucketName, scopeName, collectionName string, ctx context.Context) (*gocb.Collection, int, error) {
-	coll, err := couchbase.ResolveCollection(cb, bucketName, scopeName, collectionName, ctx)
-	if err != nil {
-		return nil, http.StatusServiceUnavailable, fmt.Errorf("bucket not ready")
-	}
-	return coll, http.StatusOK, nil
-}
-
-// writeJSON ensures consistent content-type and body schema.
-func writeJSON(w http.ResponseWriter, status int, payload any) {
-	if w == nil {
-		return
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	response.JSON(w, status, payload)
-}
-
-// okWithETag writes an {id, cas} payload with ETag header set to the quoted CAS.
-func okWithETag(w http.ResponseWriter, status int, id string, cas gocb.Cas) {
-	setETag(w, cas)
-	writeJSON(w, status, map[string]any{"id": id, "cas": fmt.Sprintf("%d", uint64(cas))})
-}
+// helpers moved to helpers.go: getScopeAndCollection, mapErrorToStatus, resolveCollectionHTTP, writeJSON, okWithETag
 
 // upsertInput holds validated inputs for the upsert flow.
 type upsertInput struct {

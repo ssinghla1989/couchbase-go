@@ -87,6 +87,122 @@ info:
   title: Couchbase Go API
   version: "1.0"
 paths:
+  /buckets/{bucket}/docs/{id}/touch:
+    post:
+      consumes:
+      - application/json
+      description: Refresh TTL of a document. ttl_seconds must be >= 1. Use PUT with ttl_seconds:0 to clear expiry.
+      parameters:
+      - description: Bucket name
+        in: path
+        name: bucket
+        required: true
+        type: string
+      - description: Document ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Scope name (default _default)
+        in: query
+        name: scope
+        type: string
+      - description: Collection name (default _default)
+        in: query
+        name: collection
+        type: string
+      - description: '{'
+        in: body
+        name: request
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          headers:
+            ETag:
+              description: CAS ETag of the document (quoted)
+              type: string
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Refresh document expiry (touch)
+  /buckets/{bucket}/counters/{id}:
+    post:
+      consumes:
+      - application/json
+      description: Increment, decrement, or fetch current unsigned integer counter value.
+      parameters:
+      - description: Bucket name
+        in: path
+        name: bucket
+        required: true
+        type: string
+      - description: Counter key
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Scope name (default _default)
+        in: query
+        name: scope
+        type: string
+      - description: Collection name (default _default)
+        in: query
+        name: collection
+        type: string
+      - description: '{'
+        in: body
+        name: request
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          headers:
+            ETag:
+              description: CAS ETag of the counter (quoted)
+              type: string
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Atomic counter increment/decrement
   /buckets/{bucket}/docs:
     post:
       consumes:

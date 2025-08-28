@@ -32,6 +32,15 @@ pkg/response/response.go
   - POST `/buckets/{bucket}/docs` (body JSON, optional `prefix` for ID)
   - PUT `/buckets/{bucket}/docs/{id}` (body JSON)
   - DELETE `/buckets/{bucket}/docs/{id}`
+  - POST `/buckets/{bucket}/docs/{id}/touch` (body `{ "ttl_seconds": int>=1, "scope": "app", "collection": "profiles" }`) → refresh expiry; 200 with `{id, cas}` and ETag
+- Counters (atomic):
+  - POST `/buckets/{bucket}/counters/{id}` with body:
+    ```
+    { "delta": 1, "initial": 0, "ttl_seconds": 3600, "scope": "app", "collection": "metrics" }
+    ```
+    - delta>0 increment, delta<0 decrement, delta==0 read current
+    - 200 → `{ "id":"<id>", "value": <uint64>, "cas":"<cas>" }` with ETag
+    - 404 when missing and no `initial`; with `initial` creates
 - Query:
   - POST `/query` with body: `{ "statement": "SELECT ... WHERE x=$x", "params": {"x":1}, "readonly": true }`
 
@@ -87,6 +96,7 @@ All handlers return JSON with consistent fields like `id`, `cas`, `content`, `de
   - 409 Conflict: CAS mismatch (`cas_mismatch`) or insert-only conflict (`conflict_exists`)
   - 428 Precondition Required: when `REQUIRE_CAS_ON_DELETE=true` and no CAS provided
   - 400 Bad Request: invalid payload / malformed CAS / negative TTL
+  - 400 Bad Request (touch): `ttl_seconds` required and must be >= 1 (use PUT ttl_seconds:0 to clear expiry)
 
 Examples:
 - Replace with CAS:

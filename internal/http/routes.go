@@ -24,6 +24,11 @@ func RegisterRoutes(r *chi.Mux, cbClient *couchbase.Client, logger *zap.Logger) 
 	r.Post("/buckets/{bucket}/docs", handlers.CreateDocument(cbClient, logger))
 	r.Put("/buckets/{bucket}/docs/{id}", handlers.UpsertDocument(cbClient, logger))
 	r.Delete("/buckets/{bucket}/docs/{id}", handlers.DeleteDocument(cbClient, logger))
+	// TTL/expiry refresh
+	r.Post("/buckets/{bucket}/docs/{id}/touch", handlers.TouchDocument(cbClient, logger))
+
+	// Atomic counters
+	r.Post("/buckets/{bucket}/counters/{id}", handlers.CounterOp(cbClient, logger))
 
 	// Bulk operations
 	r.Post("/buckets/{bucket}/docs/_bulk_get", handlers.BulkGet(cbClient, logger))

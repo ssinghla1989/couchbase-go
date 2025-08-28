@@ -165,19 +165,8 @@ func BulkGet(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			response.Error(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
 			return
 		}
-		// allow query param defaults
-		if req.Scope == "" {
-			req.Scope = r.URL.Query().Get("scope")
-		}
-		if req.Collection == "" {
-			req.Collection = r.URL.Query().Get("collection")
-		}
-		if req.Scope == "" {
-			req.Scope = "_default"
-		}
-		if req.Collection == "" {
-			req.Collection = "_default"
-		}
+		// merge scope/collection from body with query params and defaults
+		req.Scope, req.Collection = resolveScopeAndCollection(req.Scope, req.Collection, r)
 
 		maxWorkers, maxGet, _, timeout := getBulkConfig(cb)
 		if len(req.IDs) == 0 {
@@ -325,18 +314,7 @@ func BulkUpsert(cb *couchbase.Client, logger *zap.Logger) http.HandlerFunc {
 			response.Error(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
 			return
 		}
-		if req.Scope == "" {
-			req.Scope = r.URL.Query().Get("scope")
-		}
-		if req.Collection == "" {
-			req.Collection = r.URL.Query().Get("collection")
-		}
-		if req.Scope == "" {
-			req.Scope = "_default"
-		}
-		if req.Collection == "" {
-			req.Collection = "_default"
-		}
+		req.Scope, req.Collection = resolveScopeAndCollection(req.Scope, req.Collection, r)
 
 		maxWorkers, _, maxUpsert, timeout := getBulkConfig(cb)
 		if len(req.Items) == 0 {
